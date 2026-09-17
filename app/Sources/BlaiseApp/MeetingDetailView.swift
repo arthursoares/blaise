@@ -686,7 +686,9 @@ private struct NotesPane: View {
                     if let note = meeting.processingNote, !note.isEmpty {
                         HStack(alignment: .top, spacing: 8) {
                             QuietBanner(
-                                text: note, systemImage: "info.circle", tint: .secondary,
+                                text: note,
+                                systemImage: note.hasPrefix(CaptureRecovery.notePrefix) ? "exclamationmark.triangle" : "info.circle",
+                                tint: note.hasPrefix(CaptureRecovery.notePrefix) ? .orange : .secondary,
                                 accessibilityPrefix: "Processing note")
                             // C11: a capture-recovery note survives runs until a
                             // both-tracks run completes OR the user dismisses it.

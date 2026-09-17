@@ -102,6 +102,36 @@ struct CaptureRecoveryTests {
         #expect(FileManager.default.fileExists(atPath: database.paths.audioMicURL(id).path))
     }
 
+    @Test("mic-only capture with absent or zero-frame system track has a durable recovery note", arguments: [false, true])
+    func missingSystemTrackNote(emptyStub: Bool) async throws {
+        let database = try makeDatabase()
+        let id = try await makeCapturedMeetingRow(database)
+        try plantCAF(paths: database.paths, meetingID: id, track: .mic)
+        if emptyStub {
+            let writer = try CaptureCAFWriter(url: database.paths.captureCAFURL(id, track: .system))
+            writer.close()
+        }
+        let outcome = CaptureRecovery.finalizeTracks(paths: database.paths, meetingID: id)
+        #expect(outcome.encodedTracks == [.mic])
+        let note = try #require(outcome.recoveryNote)
+        #expect(note.hasPrefix(CaptureRecovery.notePrefix))
+        #expect(note.contains("system track audio missing"))
+        await CaptureRecovery.writeRecoveryNote(database: database, meetingID: id, note: note)
+        #expect(try await MeetingRepository(database: database).fetch(id)?.processingNote == note)
+    }
+
+    @Test("recovery writer preserves unavailable interval when later partial recovery is reported")
+    func preserveUnavailableInterval() async throws {
+        let database = try makeDatabase()
+        let id = try await makeCapturedMeetingRow(database)
+        let episode = "\(CaptureRecovery.notePrefix) \(CaptureRecovery.unavailableIntervalMarker)"
+        await CaptureRecovery.writeRecoveryNote(database: database, meetingID: id, note: episode)
+        await CaptureRecovery.writeRecoveryNote(database: database, meetingID: id, note: "\(CaptureRecovery.notePrefix) mic track audio damaged")
+        let note = try #require(try await MeetingRepository(database: database).fetch(id)?.processingNote)
+        #expect(note.contains(CaptureRecovery.unavailableIntervalMarker))
+        #expect(note.contains("mic track audio damaged"))
+    }
+
     @Test("finalizeTracks: one corrupt track → survivor encoded, CAF retained, note flags it")
     func finalizePartial() async throws {
         let database = try makeDatabase()

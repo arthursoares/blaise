@@ -132,11 +132,11 @@ Blaise is local-first by design, and the privacy boundary is stated honestly:
 
 ### From source
 
-Requirements: **macOS 15.6.1 (Sequoia) or later** to run, **Xcode 26** to
-build (the app compiles against the macOS 26 SDK regardless of the machine it
-will run on). On Sequoia itself, use Xcode 26.3 — the last Xcode release that
-runs on macOS 15; later versions require macOS 26. A release build takes a few
-minutes.
+Requirements: **macOS 15.6.1 (Sequoia) or later** to run, an **Xcode
+installation with a macOS 26 or newer SDK** to build (the scripts prefer macOS
+26 when it is installed). On Sequoia itself, use Xcode 26.3 — the last Xcode
+release that runs on macOS 15; later versions require macOS 26. A release build
+takes a few minutes.
 
 On macOS 15 every feature works; only the macOS 26 Liquid Glass styling
 degrades — the recording/warning capsules render as translucent material

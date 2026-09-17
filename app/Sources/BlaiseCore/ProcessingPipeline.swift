@@ -5935,7 +5935,9 @@ public actor ProcessingPipeline {
                 db, sql: "SELECT processing_note FROM meeting WHERE id = ?",
                 arguments: [meetingID])
             var note = current
-            if clearCaptureRecovery, note?.hasPrefix(CaptureRecovery.notePrefix) == true {
+            if clearCaptureRecovery, note?.hasPrefix(CaptureRecovery.notePrefix) == true,
+                note?.contains(CaptureRecovery.unavailableIntervalMarker) != true
+            {
                 note = nil
             }
             if note?.hasPrefix(CaptureRecovery.notePrefix) != true {

@@ -464,6 +464,14 @@ final class AppEnvironment {
                     self.captureStatus.apply(.micSilence(active: active))
                 case .captureDown(let active):
                     self.captureStatus.apply(.captureDown(active: active))
+                case .systemAudioUnavailable(let active):
+                    let wasUnavailable = self.captureStatus.systemAudioUnavailable
+                    self.captureStatus.apply(.systemAudioUnavailable(active: active))
+                    if active && !wasUnavailable {
+                        await self.notificationAdapter.postSystemAudioUnavailable()
+                    } else if !active {
+                        self.notificationAdapter.withdrawSystemAudioUnavailable()
+                    }
                 case .level(let you, let others):
                     // Feed raw RMS into the model (smoothing + silence); publish
                     // the ≤ 10 Hz result into the leaf-observed holder.
@@ -497,6 +505,7 @@ final class AppEnvironment {
                         }
                     }
                 case .stopping:
+                    self.notificationAdapter.withdrawSystemAudioUnavailable()
                     // The encode may take a while — reflect "processing"
                     // immediately, before `.stopped` arrives.
                     self.tickerTask?.cancel()
@@ -522,6 +531,7 @@ final class AppEnvironment {
                         }
                     }
                 case .paused(let id, let accumulatedSeconds):
+                    self.notificationAdapter.withdrawSystemAudioUnavailable()
                     // G9: the meeting is held open. The long-session ticker
                     // stops (no live capture); the indicator shows the
                     // accumulated recorded time with "paused".
@@ -1007,6 +1017,17 @@ final class AppEnvironment {
             logger.error("stop recording failed: \(error)")
             captureStatus.lastActionError = "Could not stop recording: \(error)"
         }
+    }
+
+    func retryCallAudioCapture() async {
+        guard captureStatus.showsMissingCallAudio, !captureStatus.retryingCallAudio else { return }
+        captureStatus.retryingCallAudio = true
+        defer { captureStatus.retryingCallAudio = false }
+        await recordingController.retrySystemAudio()
+    }
+
+    func openAudioSettings() {
+        NSWorkspace.shared.open(CaptureStatusHolder.audioSettingsURL)
     }
 
     // MARK: - G9 pause / resume / end (menu + main-window three-state model)

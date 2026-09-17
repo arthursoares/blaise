@@ -13,6 +13,8 @@ public enum CaptureRecovery {
     /// notes carrying this prefix SURVIVE run-entry clears until a run
     /// completes with both tracks or the user dismisses them.
     public static let notePrefix = "capture recovery:"
+    /// A recovered graph cannot restore an earlier unavailable interval.
+    public static let unavailableIntervalMarker = "call audio was unavailable during recording"
 
     private static let logger = Logger(subsystem: BlaiseBundle.identifier, category: "capture.recovery")
 
@@ -93,14 +95,20 @@ public enum CaptureRecovery {
         /// At least one track can feed processing.
         public var anyTrack: Bool { !encodedTracks.isEmpty }
 
-        /// The capture-recovery processingNote for a partial outcome; nil
-        /// when both tracks verified (nothing to flag) or nothing survived
-        /// at all is still flagged — never a silent loss.
+        /// Flags damaged audio and missing audio when another track survives.
+        /// All-empty outcomes use the controller's no-recoverable-audio alarm.
         public var recoveryNote: String? {
             let failed = results.compactMap { result -> String? in
-                guard case .failed(let reason) = result.state else { return nil }
                 let partSuffix = result.part > 1 ? " part \(result.part)" : ""
-                return "\(result.track.rawValue) track\(partSuffix) audio damaged (\(reason); CAF retained)"
+                switch result.state {
+                case .failed(let reason):
+                    return "\(result.track.rawValue) track\(partSuffix) audio damaged (\(reason); CAF retained)"
+                case .absent where anyTrack:
+                    let interval = result.track == .system ? " (\(CaptureRecovery.unavailableIntervalMarker))" : ""
+                    return "\(result.track.rawValue) track\(partSuffix) audio missing\(interval)"
+                default:
+                    return nil
+                }
             }
             guard !failed.isEmpty else { return nil }
             let damaged = failed.joined(separator: "; ")
@@ -180,9 +188,18 @@ public enum CaptureRecovery {
     /// single-writer-per-run rule governs the other two classes).
     public static func writeRecoveryNote(database: BlaiseDatabase, meetingID: MeetingID, note: String) async {
         try? await database.pool.write { db in
+            let existing = try String.fetchOne(
+                db, sql: "SELECT processing_note FROM meeting WHERE id = ?", arguments: [meetingID])
+            let merged: String
+            let detail = note.dropFirst(notePrefix.count).trimmingCharacters(in: .whitespaces)
+            if let existing, existing.hasPrefix(notePrefix), note.hasPrefix(notePrefix) {
+                merged = existing.contains(detail) ? existing : "\(existing); \(detail)"
+            } else {
+                merged = note
+            }
             try db.execute(
                 sql: "UPDATE meeting SET processing_note = ? WHERE id = ?",
-                arguments: [note, meetingID])
+                arguments: [merged, meetingID])
         }
     }
 
@@ -324,7 +341,7 @@ public enum CaptureRecovery {
         kick: @escaping @Sendable (MeetingID) async -> Void,
         reenterGrace: @escaping @Sendable (DurableGraceRow) async -> Void
     ) async -> [DurableGraceRow] {
-        let rows =
+        let rows: [DurableGraceRow] =
             (try? await database.pool.read { db in
                 try Row.fetchAll(
                     db,
@@ -332,14 +349,15 @@ public enum CaptureRecovery {
                         SELECT id, meeting_code, title, grace_until_ms FROM meeting
                         WHERE status = ? AND grace_until_ms IS NOT NULL ORDER BY id
                         """,
-                    arguments: [MeetingStatus.recording.rawValue])
+                    arguments: [MeetingStatus.recording.rawValue]).map { row in
+                        DurableGraceRow(
+                            meetingID: row["id"], code: row["meeting_code"], title: row["title"],
+                            graceUntilMs: row["grace_until_ms"])
+                    }
             }) ?? []
         var recovered: [DurableGraceRow] = []
         let nowMs = Int64(now.timeIntervalSince1970 * 1000)
-        for row in rows {
-            let grace = DurableGraceRow(
-                meetingID: row["id"], code: row["meeting_code"], title: row["title"],
-                graceUntilMs: row["grace_until_ms"])
+        for grace in rows {
             // A code-less grace can never be rejoined by signal (no correlation
             // key), so a future deadline is moot — process it like a lapsed one.
             if grace.graceUntilMs <= nowMs || grace.code == nil {

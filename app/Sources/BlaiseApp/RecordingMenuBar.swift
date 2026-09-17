@@ -58,9 +58,28 @@ final class CaptureStatusHolder {
     /// short reconnect cushion ending at this deadline.
     var meetingEndPendingUntil: Date?
 
+    private(set) var systemAudioUnavailable = false
+    private(set) var captureDown = false
+    var retryingCallAudio = false
+
+    static let missingCallAudioMessage = "Call audio is not being recorded. Other participants will be missing from this recording."
+    static let audioSettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
+
+    var showsMissingCallAudio: Bool {
+        isRecording && systemAudioUnavailable && !captureDown
+    }
+
     private var machine = IndicatorStateMachine()
 
     func apply(_ input: IndicatorStateMachine.Input) {
+        switch input {
+        case .systemAudioUnavailable(let active): systemAudioUnavailable = active
+        case .captureDown(let active): captureDown = active
+        case .captureStarted, .captureStopping, .meetingPaused, .meetingEnded:
+            systemAudioUnavailable = false
+            captureDown = false
+        default: break
+        }
         state = machine.apply(input)
     }
 
@@ -385,6 +404,18 @@ struct RecordingMenuView: View {
                 }
             }
 
+            if status.showsMissingCallAudio {
+                RecordingMenuCard(tint: .orange) {
+                    Label("Call audio unavailable", systemImage: "exclamationmark.triangle.fill")
+                        .font(.headline)
+                    Text(CaptureStatusHolder.missingCallAudioMessage)
+                    Text("Check Blaise’s permission in Screen & System Audio Recording, then retry.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Button("Open Audio Settings") { appEnv.openAudioSettings() }
+                    Button("Retry Call Audio") { Task { await appEnv.retryCallAudioCapture() } }
+                        .disabled(status.retryingCallAudio)
+                }
+            }
             automationStatusCard
         }
         .padding(12)

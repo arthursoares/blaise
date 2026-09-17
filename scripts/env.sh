@@ -6,27 +6,46 @@
 # license check.
 
 # Prefer the canonical /Applications/Xcode.app, then any versioned install
-# (Xcode_26.3.app, …) that ships a macOS 26 SDK. First match wins.
+# (Xcode_26.3.app, …). Prefer a macOS 26 SDK when one is installed; otherwise
+# use the first installed macOS SDK newer than 26. First match wins.
 XCODE_DEV=""
+SDKROOT=""
 for candidate in /Applications/Xcode.app /Applications/Xcode*.app; do
     dev="$candidate/Contents/Developer"
     for sdk in "$dev"/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26*.sdk; do
         if [ -e "$sdk" ]; then
             XCODE_DEV="$dev"
+            SDKROOT="$sdk"
             break 2
         fi
     done
 done
 
 if [ -z "$XCODE_DEV" ]; then
-    echo "error: no Xcode with a macOS 26 SDK found under /Applications (Xcode 26 required)" >&2
+    for candidate in /Applications/Xcode.app /Applications/Xcode*.app; do
+        dev="$candidate/Contents/Developer"
+        for sdk in "$dev"/Platforms/MacOSX.platform/Developer/SDKs/MacOSX*.sdk; do
+            sdk_name="${sdk##*/MacOSX}"
+            sdk_version="${sdk_name%.sdk}"
+            case "$sdk_version" in
+                2[7-9]*|[3-9][0-9]*|[1-9][0-9][0-9]*)
+                    XCODE_DEV="$dev"
+                    SDKROOT="$sdk"
+                    break 2
+                    ;;
+            esac
+        done
+    done
+fi
+
+if [ -z "$XCODE_DEV" ]; then
+    echo "error: no Xcode with a macOS 26 or newer SDK found under /Applications" >&2
     return 1 2>/dev/null || exit 1
 fi
 
 PLAT="$XCODE_DEV/Platforms/MacOSX.platform/Developer"
 SWIFT="$XCODE_DEV/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift"
 
-SDKROOT="$(ls -d "$PLAT"/SDKs/MacOSX26*.sdk | head -1)"
 export SDKROOT
 
 if [[ ! -x "$SWIFT" ]]; then

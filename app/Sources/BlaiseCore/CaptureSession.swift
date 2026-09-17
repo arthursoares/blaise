@@ -56,6 +56,40 @@ public final class CaptureSession: AudioCapturing, @unchecked Sendable {
     /// rebuild races).
     private var generation = 0
     private var silenceDetector = MicSilenceDetector()
+    private var systemAudioHealth = SystemAudioHealth()
+    private var systemHealthTimer: DispatchSourceTimer?
+    private var systemNeedsAlignment = false
+    #if DEBUG
+    private var omittedTapBuildsRemaining = 0
+    private var omitMicrophoneForDiagnostics = false
+
+    /// Deliberate hardware fault for local QA only. Release builds contain
+    /// neither this switch nor the omission path. Require a disposable root
+    /// and cap omissions so manual Retry can restore the real tap.
+    static func diagnosticTapOmissionCount(environment: [String: String]) -> Int {
+        guard let value = environment["BLAISE_CAPTURE_TEST_OMIT_TAP_BUILDS"],
+            let count = Int(value), (1...3).contains(count),
+            isTemporaryDiagnosticRoot(environment: environment) else { return 0 }
+        return count
+    }
+
+    static func diagnosticOmitsMicrophone(environment: [String: String]) -> Bool {
+        environment["BLAISE_CAPTURE_TEST_OMIT_MIC"] == "1"
+            && isTemporaryDiagnosticRoot(environment: environment)
+    }
+
+    private static func isTemporaryDiagnosticRoot(environment: [String: String]) -> Bool {
+        guard let root = environment["BLAISE_DATA_ROOT"] else { return false }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: root, isDirectory: &isDirectory),
+            isDirectory.boolValue else { return false }
+        let path = URL(fileURLWithPath: root).standardizedFileURL.resolvingSymlinksInPath().path
+        let temporaryRoots = [NSTemporaryDirectory(), "/private/tmp"].map {
+            URL(fileURLWithPath: $0).standardizedFileURL.resolvingSymlinksInPath().path
+        }
+        return temporaryRoots.contains { path.hasPrefix($0 + "/") }
+    }
+    #endif
     /// G12 §2: the last time a level-meter RMS pair was emitted (the ≤ 10 Hz
     /// source throttle — buffers arrive far faster). Owned by processingQueue.
     private var lastLevelEmit: Date?
@@ -122,6 +156,14 @@ public final class CaptureSession: AudioCapturing, @unchecked Sendable {
             self.writers = (system, mic)
             self.onEvent = onEvent
             self.silenceDetector = MicSilenceDetector()
+            self.systemAudioHealth = SystemAudioHealth()
+            self.systemNeedsAlignment = false
+            #if DEBUG
+            self.omittedTapBuildsRemaining = Self.diagnosticTapOmissionCount(
+                environment: ProcessInfo.processInfo.environment)
+            self.omitMicrophoneForDiagnostics = Self.diagnosticOmitsMicrophone(
+                environment: ProcessInfo.processInfo.environment)
+            #endif
             self.lastLevelEmit = nil
             self.stopped = false
             self.writeFailed = false
@@ -147,7 +189,10 @@ public final class CaptureSession: AudioCapturing, @unchecked Sendable {
                 throw error
             }
             installRouteListeners()
-            return CaptureStartInfo(micStreams: graph?.micStreamCount ?? 0)
+            installSystemHealthMonitor()
+            return CaptureStartInfo(
+                micStreams: graph?.micStreamCount ?? 0,
+                systemStreams: graph.map { max(0, $0.streamFormats.count - $0.micStreamCount) } ?? 0)
         }
     }
 
@@ -155,6 +200,8 @@ public final class CaptureSession: AudioCapturing, @unchecked Sendable {
         processingQueue.sync {
             guard !stopped else { return }
             stopped = true
+            systemHealthTimer?.cancel()
+            systemHealthTimer = nil
             pendingRebuild?.cancel()
             pendingRebuild = nil
             pendingForced = false
@@ -166,6 +213,36 @@ public final class CaptureSession: AudioCapturing, @unchecked Sendable {
             writers = nil
             onEvent = nil
         }
+    }
+
+    public func retrySystemAudio() async {
+        processingQueue.sync {
+            guard !stopped, !writeFailed, systemAudioHealth.unavailable,
+                pendingRebuild == nil else { return }
+            scheduleRebuild(forced: true)
+        }
+    }
+
+    private func installSystemHealthMonitor() {
+        systemHealthTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: processingQueue)
+        timer.schedule(deadline: .now() + 1, repeating: 1)
+        timer.setEventHandler { [weak self] in self?.checkSystemAudioHealth() }
+        systemHealthTimer = timer
+        timer.resume()
+    }
+
+    private func checkSystemAudioHealth() {
+        guard !stopped, !writeFailed, let graph else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let changed = systemAudioHealth.poll(at: now) {
+            logger.error("system audio frame delivery stalled; checking tap and aggregate")
+            logTapDiagnostics(tapID: graph.tapID, aggregateID: graph.aggregateID)
+            onEvent?(.systemAudioUnavailable(active: changed))
+        }
+        guard pendingRebuild == nil, systemAudioHealth.claimAutomaticRetry(at: now) else { return }
+        logger.notice("attempting bounded system audio recovery; captured audio will be retained")
+        scheduleRebuild(forced: true)
     }
 
     // MARK: - Graph (tap + aggregate + IOProc), built/rebuilt on processingQueue
@@ -214,10 +291,22 @@ public final class CaptureSession: AudioCapturing, @unchecked Sendable {
             throw CaptureSessionError.noDefaultInputDevice
         }
         let aggregateUID = CaptureDescriptors.makeAggregateUID()
-        let composition = CaptureDescriptors.aggregateComposition(
+        var composition = CaptureDescriptors.aggregateComposition(
             tapUID: description.uuid.uuidString,
             inputDeviceUID: inputUID,
             aggregateUID: aggregateUID)
+        #if DEBUG
+        if omitMicrophoneForDiagnostics {
+            composition[kAudioAggregateDeviceSubDeviceListKey as String] = [] as [[String: Any]]
+            composition.removeValue(forKey: kAudioAggregateDeviceMainSubDeviceKey as String)
+            logger.notice("DEBUG capture isolation: microphone omitted; aggregate contains only the system tap")
+        }
+        if omittedTapBuildsRemaining > 0 {
+            omittedTapBuildsRemaining -= 1
+            composition[kAudioAggregateDeviceTapListKey as String] = [] as [[String: Any]]
+            logger.notice("DEBUG capture fault: omitting system tap; remaining omitted builds=\(self.omittedTapBuildsRemaining, privacy: .public)")
+        }
+        #endif
         // Live-session guard: the launch-time stale-aggregate cleanup must
         // never destroy the device an active capture is using. The UID is
         // minted client-side, so register BEFORE creation — no window in
@@ -233,7 +322,11 @@ public final class CaptureSession: AudioCapturing, @unchecked Sendable {
 
         do {
             // 4. Stream layout + formats (buffer[i] ↔ stream[i] in the IOProc).
+            #if DEBUG
+            let micStreamCount = omitMicrophoneForDiagnostics ? 0 : Self.inputStreamCount(of: inputDevice)
+            #else
             let micStreamCount = Self.inputStreamCount(of: inputDevice)
+            #endif
             if micStreamCount == 0 {
                 // LOUD: the aggregate exposes no input-device streams — the
                 // mic track will stay empty (the silence detector cannot
@@ -364,6 +457,14 @@ public final class CaptureSession: AudioCapturing, @unchecked Sendable {
                 micConverter: micConverter, systemConverter: systemConverter,
                 observedRateAtBuild: aggregateRate,
                 rateListener: rateStatus == noErr ? rateListener : nil)
+            logTapDiagnostics(tapID: tapID, aggregateID: aggregateID)
+            let hasSystemStream = systemConverter != nil
+            if !hasSystemStream { systemNeedsAlignment = true }
+            if let changed = systemAudioHealth.graphStarted(
+                at: ProcessInfo.processInfo.systemUptime, hasSystemStream: hasSystemStream)
+            {
+                onEvent?(.systemAudioUnavailable(active: changed))
+            }
             logger.notice(
                 "capture graph live: \(streams.count) streams (\(micStreamCount) mic), tap format \(streamFormats.last.map { "\($0.sampleRate) Hz \($0.channelCount) ch" } ?? "unknown")")
         } catch {
@@ -651,8 +752,8 @@ public final class CaptureSession: AudioCapturing, @unchecked Sendable {
         logger.notice(
             "gap-filling \(frames) frames (\(gap, format: .fixed(precision: 2)) s) of silence after rebuild")
         do {
-            try writeSilence(frames: frames, to: writers.system)
-            try writeSilence(frames: frames, to: writers.mic)
+            try Self.writeSilence(frames: frames, to: writers.system)
+            try Self.writeSilence(frames: frames, to: writers.mic)
             self.lastBufferUptime = ProcessInfo.processInfo.systemUptime
         } catch {
             writeFailed = true
@@ -662,7 +763,7 @@ public final class CaptureSession: AudioCapturing, @unchecked Sendable {
 
     /// ≤ 1 s chunks bound the allocation; the buffer is explicitly zeroed
     /// (AVAudioPCMBuffer does not document zero-initialized memory).
-    private func writeSilence(frames: Int, to writer: CaptureCAFWriter) throws {
+    private static func writeSilence(frames: Int, to writer: CaptureCAFWriter) throws {
         let chunkFrames = Int(CaptureCAFWriter.sampleRate)
         var remaining = frames
         while remaining > 0 {
@@ -684,6 +785,13 @@ public final class CaptureSession: AudioCapturing, @unchecked Sendable {
             try writer.write(buffer)
             remaining -= Int(n)
         }
+    }
+
+    /// Restore the system track's position before writing its first recovered
+    /// buffer. Existing samples are never truncated or overwritten.
+    static func alignRecoveredSystemTrack(_ writer: CaptureCAFWriter, toMicFrame frame: Int64) throws {
+        let gap = max(0, frame - writer.framesWritten)
+        if gap > 0 { try writeSilence(frames: Int(gap), to: writer) }
     }
 
     // MARK: - IO path
@@ -766,6 +874,7 @@ public final class CaptureSession: AudioCapturing, @unchecked Sendable {
         }
 
         do {
+            let micFramesBeforeBuffer = writers.mic.framesWritten
             if !micData.isEmpty, let format = graph.streamFormats.first,
                 let converter = graph.micConverter
             {
@@ -774,9 +883,23 @@ public final class CaptureSession: AudioCapturing, @unchecked Sendable {
             if !systemData.isEmpty, graph.streamFormats.indices.contains(graph.micStreamCount),
                 let converter = graph.systemConverter
             {
-                try convertAndWrite(
+                // A system-only outage must not move recovered speech earlier
+                // than the microphone timeline. Padding is not capture evidence.
+                if systemNeedsAlignment {
+                    try Self.alignRecoveredSystemTrack(writers.system, toMicFrame: micFramesBeforeBuffer)
+                    systemNeedsAlignment = false
+                }
+                let frames = try convertAndWrite(
                     systemData, sourceFormat: graph.streamFormats[graph.micStreamCount],
                     converter: converter, writer: writers.system)
+                if frames > 0, let changed = systemAudioHealth.receivedFrames(
+                    at: ProcessInfo.processInfo.systemUptime)
+                {
+                    logger.notice("system audio frame delivery restored; previous missing audio remains incomplete")
+                    onEvent?(.systemAudioUnavailable(active: changed))
+                }
+            } else {
+                systemNeedsAlignment = true
             }
         } catch {
             writeFailed = true
@@ -784,10 +907,11 @@ public final class CaptureSession: AudioCapturing, @unchecked Sendable {
         }
     }
 
+    @discardableResult
     private func convertAndWrite(
         _ data: Data, sourceFormat: AVAudioFormat, converter: AVAudioConverter,
         writer: CaptureCAFWriter
-    ) throws {
+    ) throws -> AVAudioFrameCount {
         // F-5: broken formats and failed allocations THROW (→ `.writeFailure`
         // stop-and-salvage). A silent `return` here dropped live audio with a
         // green indicator. A zero-frame slice alone stays a benign no-op.
@@ -796,7 +920,7 @@ public final class CaptureSession: AudioCapturing, @unchecked Sendable {
             throw CaptureCAFWriterError.writeFailed("source format has 0 bytes per frame")
         }
         let frames = AVAudioFrameCount(data.count / bytesPerFrame)
-        guard frames > 0 else { return }
+        guard frames > 0 else { return 0 }
         guard let input = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: frames)
         else {
             throw CaptureCAFWriterError.writeFailed("input buffer allocation failed (\(frames) frames)")
@@ -842,6 +966,27 @@ public final class CaptureSession: AudioCapturing, @unchecked Sendable {
         if output.frameLength > 0 {
             try writer.write(output)
         }
+        return output.frameLength
+    }
+
+    /// Read back actual tap membership and stream readiness, rather than
+    /// inferring success from the create calls. No device identifiers or
+    /// audio content are logged.
+    private func logTapDiagnostics(tapID: AudioObjectID, aggregateID: AudioObjectID) {
+        var format = AudioStreamBasicDescription()
+        var formatAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioTapPropertyFormat, mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        let formatStatus = AudioObjectGetPropertyData(tapID, &formatAddress, 0, nil, &size, &format)
+        var tapsAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioAggregateDevicePropertySubTapList,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var tapsSize: UInt32 = 0
+        let tapsStatus = AudioObjectGetPropertyDataSize(aggregateID, &tapsAddress, 0, nil, &tapsSize)
+        let activeTaps = tapsStatus == noErr ? Int(tapsSize) / MemoryLayout<AudioObjectID>.size : -1
+        let streams = Self.inputStreams(of: aggregateID).count
+        logger.notice("tap diagnostics: formatStatus=\(formatStatus, privacy: .public) rate=\(format.mSampleRate, privacy: .public) channels=\(format.mChannelsPerFrame, privacy: .public) activeTapsStatus=\(tapsStatus, privacy: .public) activeTaps=\(activeTaps, privacy: .public) aggregateStreams=\(streams, privacy: .public)")
     }
 
     // MARK: - Stale-aggregate cleanup (launch hygiene)

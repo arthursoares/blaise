@@ -24,6 +24,14 @@ FLAGS=(
     -Xlinker -rpath -Xlinker "$PLAT/Library/PrivateFrameworks"
 )
 
+# Some /usr/bin tools used by tests are xcode-select shims. A caller may
+# select installed Command Line Tools for those subprocesses without hiding
+# Xcode's asset tools from the build above the --skip-build test invocations.
+TEST_ENV=()
+if [[ -n "${BLAISE_TEST_DEVELOPER_DIR:-}" ]]; then
+    TEST_ENV=(env "DEVELOPER_DIR=$BLAISE_TEST_DEVELOPER_DIR")
+fi
+
 echo "building test bundle…"
 "$SWIFT" build --build-tests "${FLAGS[@]}"
 
@@ -47,7 +55,7 @@ for (( s=0; s<SHARDS; s++ )); do
     # the suite-name boundary so e.g. HandoffTests never swallows HandoffWorkerTests.
     filter=$(printf '%s[./]|' "${group[@]}"); filter="(${filter%|})"
     echo "=== shard $((s+1))/$SHARDS — ${#group[@]} suites ==="
-    "$SWIFT" test --skip-build "${FLAGS[@]}" --filter "$filter" &
+    "${TEST_ENV[@]}" "$SWIFT" test --skip-build "${FLAGS[@]}" --filter "$filter" &
     tpid=$!
     ( sleep "$PER_SHARD_TIMEOUT"; kill -9 "$tpid" 2>/dev/null; echo "  !! shard $((s+1)) watchdog-killed" ) &
     wpid=$!

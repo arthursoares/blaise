@@ -27,6 +27,8 @@ import Foundation
 //                                                    DELIVERED lines + final snapshot JSON
 //   handoff-queue <dataRoot>                       → prints queue rows as JSON lines (DB open
 //                                                    runs the C1 delivering→pending sweep)
+//   capture-probe <dataRoot> <seconds>              → records with the real CaptureSession for
+//                                                    1...60 seconds, then finalizes both tracks
 //
 // Stub engines are byte-deterministic (fixed dates, fixed clock) — the only
 // honest way to assert byte-level no-ops at the deterministic kill points.
@@ -269,6 +271,15 @@ if mode == "ulid" {
 }
 guard args.count >= 3 else {
     fail("usage: CrashRunner \(mode) <dataRoot> …")
+}
+let captureProbeSeconds: Int?
+if mode == "capture-probe" {
+    guard args.count == 4, let seconds = Int(args[3]), (1...60).contains(seconds) else {
+        fail("usage: CrashRunner capture-probe <dataRoot> <seconds: 1...60>")
+    }
+    captureProbeSeconds = seconds
+} else {
+    captureProbeSeconds = nil
 }
 let dataRoot = URL(fileURLWithPath: args[2], isDirectory: true)
 
@@ -534,6 +545,20 @@ let task = Task.detached {
             // uncatchable NSException ("Operation not supported").
             FileHandle.standardOutput.write(Data("CAPTURING \(meeting.id)\n".utf8))
             try await Task.sleep(for: .seconds(3600))
+
+        case "capture-probe":
+            // Isolated hardware probe: unlike the kill harness above, stop
+            // cleanly so both CAF tracks pass through normal finalization.
+            // It deliberately constructs no app environment, secret store,
+            // cloud engine, or UI surface.
+            let database = try BlaiseDatabase(rootURL: dataRoot)
+            let controller = RecordingController(
+                database: database, engine: CaptureSession(), processKicker: { _ in })
+            let meeting = try await controller.start(source: .inPerson, title: "Capture probe")
+            FileHandle.standardOutput.write(Data("CAPTURING \(meeting.id)\n".utf8))
+            try await Task.sleep(for: .seconds(captureProbeSeconds!))
+            let finished = try await controller.stop()
+            print("CAPTURED \(finished.id)")
 
         default:
             fail("unknown mode \(mode)")

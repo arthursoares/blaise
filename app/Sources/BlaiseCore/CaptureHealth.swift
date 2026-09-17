@@ -78,6 +78,7 @@ public enum IndicatorState: Equatable, Sendable {
 public struct IndicatorStateMachine: Sendable, Equatable {
     public private(set) var state: IndicatorState = .idle
     private var micSilence = false
+    private var systemAudioUnavailable = false
     /// B4 (audit): the capture graph has been DOWN longer than
     /// `CaptureSession.captureDownAlarmSeconds` while a rebuild retries.
     /// See that constant for why this must be visible.
@@ -123,6 +124,7 @@ public struct IndicatorStateMachine: Sendable, Equatable {
         /// live recording wins the indicator.
         case captureStopped(alarm: String?)
         case micSilence(active: Bool)
+        case systemAudioUnavailable(active: Bool)
         /// The capture graph went down / came back during a route-change rebuild.
         case captureDown(active: Bool)
         /// Periodic clock tick (long-session check, > 6 h).
@@ -154,6 +156,7 @@ public struct IndicatorStateMachine: Sendable, Equatable {
             // and resurfaces once this recording stops.
             startedAt = at
             micSilence = false
+            systemAudioUnavailable = false
             captureDown = false
             paused = nil
             processing = false
@@ -163,6 +166,7 @@ public struct IndicatorStateMachine: Sendable, Equatable {
             // The session is no longer live.
             startedAt = nil
             micSilence = false
+            systemAudioUnavailable = false
             captureDown = false
             processing = true
         case .captureStopped(let alarm):
@@ -174,6 +178,7 @@ public struct IndicatorStateMachine: Sendable, Equatable {
             // done, but the pipeline run continues until `.processingFinished`).
             guard startedAt == nil else { break }
             micSilence = false
+            systemAudioUnavailable = false
             captureDown = false
             if let alarm {
                 // The loud path: persists until acknowledged or the next
@@ -184,6 +189,10 @@ public struct IndicatorStateMachine: Sendable, Equatable {
             }
         case .micSilence(let active):
             micSilence = active
+            resolveDisplay(now: nil)
+            return state
+        case .systemAudioUnavailable(let active):
+            systemAudioUnavailable = active
             resolveDisplay(now: nil)
             return state
         case .captureDown(let active):
@@ -216,6 +225,7 @@ public struct IndicatorStateMachine: Sendable, Equatable {
             // by spec §4), so this input is authoritative for the transition.
             startedAt = nil
             micSilence = false
+            systemAudioUnavailable = false
             captureDown = false
             paused = PausedMeeting(title: title, accumulatedSeconds: seconds)
         case .meetingResumed:
@@ -270,6 +280,11 @@ public struct IndicatorStateMachine: Sendable, Equatable {
         if captureDown {
             return .warning(
                 startedAt: startedAt, message: "Audio device changed — recording is paused, retrying")
+        } else if systemAudioUnavailable {
+            let message = micSilence
+                ? "Call audio is not being recorded. Mic appears silent — check input device."
+                : "Call audio is not being recorded. Other participants will be missing from this recording."
+            return .warning(startedAt: startedAt, message: message)
         } else if micSilence {
             return .warning(startedAt: startedAt, message: "Mic appears silent — check input device")
         } else if longSession {

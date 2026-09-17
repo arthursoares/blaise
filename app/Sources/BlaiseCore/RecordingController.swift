@@ -15,6 +15,8 @@ public enum CaptureEngineEvent: Sendable, Equatable {
     /// Mic all-zero ≥ 60 s while system audio is active (true), or the mic
     /// signal returned (false).
     case micSilence(active: Bool)
+    /// The graph exposes no usable system audio stream; silence alone is not failure.
+    case systemAudioUnavailable(active: Bool)
     /// B4 (audit): the capture graph has been DOWN through a route-change
     /// rebuild for longer than `CaptureSession.captureDownAlarmSeconds`
     /// (true), or a rebuild succeeded and capture resumed (false). Unlike
@@ -40,7 +42,11 @@ public struct CaptureStartInfo: Sendable, Equatable {
     /// Input-device stream count; 0 = the mic track will stay empty and
     /// the silence detector can never fire (no data) — warn at start.
     public var micStreams: Int
-    public init(micStreams: Int) { self.micStreams = micStreams }
+    public var systemStreams: Int
+    public init(micStreams: Int, systemStreams: Int = 1) {
+        self.micStreams = micStreams
+        self.systemStreams = systemStreams
+    }
 }
 
 /// The capture engine (real: `CaptureSession`, CoreAudio process tap +
@@ -52,6 +58,11 @@ public protocol AudioCapturing: Sendable {
         onEvent: @escaping @Sendable (CaptureEngineEvent) -> Void
     ) async throws -> CaptureStartInfo
     func stop() async
+    func retrySystemAudio() async
+}
+
+public extension AudioCapturing {
+    func retrySystemAudio() async {}
 }
 
 // MARK: - Controller
@@ -195,6 +206,8 @@ public final class RecordingLifecycleObserverBox: RecordingLifecycleObserving, S
 public enum RecordingEvent: Sendable, Equatable {
     case started(meetingID: MeetingID, at: Date)
     case micSilence(active: Bool)
+    /// The graph exposes no usable system audio stream; silence alone is not failure.
+    case systemAudioUnavailable(active: Bool)
     /// B4 (audit): capture graph down/up during a route-change rebuild.
     case captureDown(active: Bool)
     /// The engine is down and the encode is running — emitted immediately
@@ -357,6 +370,12 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
         }
     }
 
+    /// Retry the live graph without stopping the microphone or opening another part.
+    public func retrySystemAudio() async {
+        guard let session = active, !session.stopping else { return }
+        await engine.retrySystemAudio()
+    }
+
     // MARK: - Start
 
     /// Creates the Meeting row (`status = recording`), starts the capture
@@ -449,7 +468,7 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
                 systemCAF: database.paths.captureCAFURL(meetingID, track: .system),
                 micCAF: database.paths.captureCAFURL(meetingID, track: .mic),
                 onEvent: { [weak self] event in
-                    Task { await self?.handleEngineEvent(event) }
+                    Task { await self?.handleEngineEvent(event, meetingID: meetingID, partIndex: 1) }
                 })
         } catch {
             // Honest failure: the row stays, marked failed (never deleted).
@@ -486,6 +505,9 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
             // the only chance to warn.
             logger.error("input device exposes no streams; mic track will be EMPTY")
             emit(.micSilence(active: true))
+        }
+        if startInfo.systemStreams == 0 {
+            await reportSystemAudioUnavailable(meetingID: meeting.id)
         }
         logger.notice("recording started: \(meeting.id) source=\(source.rawValue)")
         let observer = self.observer
@@ -542,7 +564,7 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
                 systemCAF: database.paths.captureCAFURL(meetingID, track: .system, part: part),
                 micCAF: database.paths.captureCAFURL(meetingID, track: .mic, part: part),
                 onEvent: { [weak self] event in
-                    Task { await self?.handleEngineEvent(event) }
+                    Task { await self?.handleEngineEvent(event, meetingID: meetingID, partIndex: part) }
                 })
         } catch {
             // The meeting stays in grace (status `recording`, earlier parts
@@ -559,6 +581,9 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
         if startInfo.micStreams == 0 {
             logger.error("input device exposes no streams; mic track will be EMPTY")
             emit(.micSilence(active: true))
+        }
+        if startInfo.systemStreams == 0 {
+            await reportSystemAudioUnavailable(meetingID: meeting.id)
         }
         logger.notice("recording resumed: \(meetingID) part=\(part)")
         let observer = self.observer
@@ -698,7 +723,7 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
                 systemCAF: database.paths.captureCAFURL(meetingID, track: .system, part: part),
                 micCAF: database.paths.captureCAFURL(meetingID, track: .mic, part: part),
                 onEvent: { [weak self] event in
-                    Task { await self?.handleEngineEvent(event) }
+                    Task { await self?.handleEngineEvent(event, meetingID: meetingID, partIndex: part) }
                 })
         } catch {
             // Engine-start failure: stays `paused`, earlier parts intact. The
@@ -737,6 +762,9 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
         if startInfo.micStreams == 0 {
             logger.error("input device exposes no streams; mic track will be EMPTY")
             emit(.micSilence(active: true))
+        }
+        if startInfo.systemStreams == 0 {
+            await reportSystemAudioUnavailable(meetingID: meeting.id)
         }
         logger.notice("recording resumed from pause: \(meetingID) part=\(part)")
         let observer = self.observer
@@ -1053,10 +1081,26 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
             scheduledEndMs: meeting.scheduledEndMs)
     }
 
-    private func handleEngineEvent(_ event: CaptureEngineEvent) async {
+    private func handleEngineEvent(
+        _ event: CaptureEngineEvent, meetingID: MeetingID, partIndex: Int
+    ) async {
+        // Callbacks cross a Task boundary and may outlive stop, pause, or a
+        // later start. Their durable facts belong to their original meeting;
+        // only the currently live part may drive UI or stop the engine.
+        let belongsToLivePart = active.map {
+            $0.meeting.id == meetingID && $0.partIndex == partIndex && !$0.stopping
+        } ?? false
+        if case .systemAudioUnavailable(let activeNow) = event {
+            if belongsToLivePart { emit(.systemAudioUnavailable(active: activeNow)) }
+            if activeNow { await persistSystemAudioUnavailable(meetingID: meetingID) }
+            return
+        }
+        guard belongsToLivePart else { return }
         switch event {
         case .micSilence(let activeNow):
             emit(.micSilence(active: activeNow))
+        case .systemAudioUnavailable:
+            break  // handled above, including late durable facts
         case .captureDown(let activeNow):
             emit(.captureDown(active: activeNow))
         case .level(let you, let others):
@@ -1069,6 +1113,17 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
             _ = try? await performStop(
                 alarm: "Recording stopped: \(message)", manual: false, kickProcessing: true)
         }
+    }
+
+    private func reportSystemAudioUnavailable(meetingID: MeetingID) async {
+        emit(.systemAudioUnavailable(active: true))
+        await persistSystemAudioUnavailable(meetingID: meetingID)
+    }
+
+    private func persistSystemAudioUnavailable(meetingID: MeetingID) async {
+        await CaptureRecovery.writeRecoveryNote(
+            database: database, meetingID: meetingID,
+            note: "\(CaptureRecovery.notePrefix) \(CaptureRecovery.unavailableIntervalMarker); some call audio may be missing")
     }
 
     // MARK: - Helpers

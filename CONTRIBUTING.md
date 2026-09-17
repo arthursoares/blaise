@@ -5,7 +5,7 @@ the tests, and the rules a pull request needs to follow.
 
 ## Prerequisites
 
-- **macOS 26 or later** and **Xcode 26** for the app and its tests.
+- **macOS 26 or later** and an **Xcode installation with a macOS 26 or newer SDK** for the app and its tests. The scripts prefer macOS 26 when it is installed.
 - **Node.js 22 or later** for the Chrome extension's test suite.
 
 The app is a pure Swift Package Manager project — there is no `.xcodeproj`. The
@@ -50,6 +50,20 @@ the whole suite in a single process hits a cooperative-pool contention limit at
 scale. **Run the full suite via `scripts/test.sh`, not a bare `swift test`** — a
 bare full-suite run can hang. A filtered run (`scripts/test.sh --filter X`, or
 `swift test --filter X` directly) is fine.
+
+If an Xcode update makes `/usr/bin/python3` exit with code 69 because its
+license has not been accepted, an already-installed Command Line Tools Python
+can run the stdlib driver tests without changing system settings:
+
+```sh
+BLAISE_TEST_DEVELOPER_DIR=/Library/Developer/CommandLineTools scripts/test.sh
+```
+
+This override applies only to the sharded runner's `--skip-build` test
+subprocesses. Builds still use Xcode; asset tools such as `actool` are not
+supplied by the standalone Command Line Tools. For a focused rerun after
+building, use `DEVELOPER_DIR=/Library/Developer/CommandLineTools scripts/test.sh
+--skip-build --filter WhisperDriver`.
 
 The extension suite can also be run on its own:
 

@@ -18,6 +18,7 @@ enum AutomationNotificationCategory {
     static let calendarUpcoming = "calendarUpcoming"
     static let graceResume = "graceResume"
     static let handoffWarning = "handoffWarning"
+    static let systemAudioUnavailable = "systemAudioUnavailable"
     static let diagnostics = "diagnostics"
     static let participantConfirm = "participantConfirm"
 
@@ -104,6 +105,9 @@ final class AutomationNotificationAdapter: NSObject, AutomationNotifying,
             identifier: AutomationNotificationCategory.confirmParticipantsAction,
             title: "Confirm participants", options: [.foreground])
         center.setNotificationCategories([
+            UNNotificationCategory(
+                identifier: AutomationNotificationCategory.systemAudioUnavailable, actions: [openBlaise],
+                intentIdentifiers: []),
             UNNotificationCategory(
                 identifier: AutomationNotificationCategory.meetStart, actions: [record],
                 intentIdentifiers: []),
@@ -285,6 +289,20 @@ final class AutomationNotificationAdapter: NSObject, AutomationNotifying,
         withdraw(ids: [Self.handoffWarningID])
     }
 
+    func postSystemAudioUnavailable() async {
+        let content = UNMutableNotificationContent()
+        content.title = "Call audio unavailable"
+        content.body = "Call audio is not being recorded. Open Blaise to check audio settings and retry."
+        content.categoryIdentifier = AutomationNotificationCategory.systemAudioUnavailable
+        content.interruptionLevel = .active
+        content.sound = .default
+        await post(id: "blaise.systemaudiounavailable", content: content)
+    }
+
+    func withdrawSystemAudioUnavailable() {
+        withdraw(ids: ["blaise.systemaudiounavailable"])
+    }
+
     private static let handoffWarningID = "blaise.handoffwarning"
 
     /// G15: the participant-confirmation gate parked a meeting (posted once per
@@ -410,7 +428,8 @@ final class AutomationNotificationAdapter: NSObject, AutomationNotifying,
             return nil
         case AutomationNotificationCategory.graceResume:
             return (info["meetingID"] as? String).map { .resume(meetingID: $0) }
-        case AutomationNotificationCategory.handoffWarning,
+        case AutomationNotificationCategory.systemAudioUnavailable,
+             AutomationNotificationCategory.handoffWarning,
              AutomationNotificationCategory.diagnostics:
             return .openMainWindow
         case AutomationNotificationCategory.participantConfirm:

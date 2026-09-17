@@ -132,6 +132,7 @@ struct LibraryView: View {
         // the top of the split view. Clears silently on delivery.
         .overlay(alignment: .top) {
             VStack(spacing: 6) {
+                MissingCallAudioBanner()
                 DetectedMeetingBanner()
                 HandoffWarningBanner()
             }
@@ -789,6 +790,13 @@ struct MeetingRowView: View {
                     .foregroundStyle(Theme.accent)
                     .accessibilityLabel("Waiting for you to confirm participants")
                 }
+                if item.meeting.processingNote?.hasPrefix(CaptureRecovery.notePrefix) == true {
+                    Label("Capture incomplete", systemImage: "exclamationmark.triangle")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.orange)
+                        .help(item.meeting.processingNote ?? "")
+                        .accessibilityLabel("Capture incomplete. See capture recovery note.")
+                }
                 if item.userActionItemCount > 0 {
                     HStack(spacing: 3) {
                         Image(systemName: "checklist")
@@ -1323,6 +1331,35 @@ extension View {
             scrollEdgeEffectStyle(.soft, for: .top)
         } else {
             self
+        }
+    }
+}
+
+/// Persistent recording health surface; meter silence alone never activates it.
+struct MissingCallAudioBanner: View {
+    @Environment(AppEnvironment.self) private var appEnv
+
+    var body: some View {
+        if appEnv.captureStatus.showsMissingCallAudio {
+            VStack(alignment: .leading, spacing: 8) {
+                Label(CaptureStatusHolder.missingCallAudioMessage,
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.headline)
+                Text("Check Blaise’s permission in Screen & System Audio Recording, then retry. Retrying keeps this meeting’s saved audio.")
+                    .font(.callout)
+                HStack {
+                    Button("Open Audio Settings") { appEnv.openAudioSettings() }
+                    Button("Retry Call Audio") { Task { await appEnv.retryCallAudioCapture() } }
+                        .disabled(appEnv.captureStatus.retryingCallAudio)
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(14)
+            .frame(maxWidth: 680, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(.orange, lineWidth: 1))
+            .padding(12)
+            .accessibilityElement(children: .contain)
         }
     }
 }
