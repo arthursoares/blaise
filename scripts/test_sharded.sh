@@ -27,7 +27,7 @@ FLAGS=(
 # Some /usr/bin tools used by tests are xcode-select shims. A caller may
 # select installed Command Line Tools for those subprocesses without hiding
 # Xcode's asset tools from the build above the --skip-build test invocations.
-TEST_ENV=()
+TEST_ENV=(env)
 if [[ -n "${BLAISE_TEST_DEVELOPER_DIR:-}" ]]; then
     TEST_ENV=(env "DEVELOPER_DIR=$BLAISE_TEST_DEVELOPER_DIR")
 fi
