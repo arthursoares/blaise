@@ -80,6 +80,7 @@ struct BlaiseApplication: App {
     /// Composition root — built once; a failure to open the database is
     /// unrecoverable and surfaced in a minimal window.
     @State private var environment: AppEnvironment?
+    @State private var updateController = UpdateController()
     @State private var startupError: String?
     @State private var started = false
     @NSApplicationDelegateAdaptor(BlaiseAppDelegate.self) private var appDelegate
@@ -136,6 +137,9 @@ struct BlaiseApplication: App {
         }
         .defaultSize(width: 1440, height: 900)
         .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesCommandButton(controller: updateController)
+            }
             ProcessingQueueCommands()
             CommandGroup(after: .newItem) {
                 if let environment {
@@ -223,6 +227,17 @@ struct BlaiseApplication: App {
             }
         }
         .defaultSize(width: 480, height: 440)
+    }
+}
+
+struct CheckForUpdatesCommandButton: View {
+    let controller: UpdateController
+
+    var body: some View {
+        Button("Check for Updates…") {
+            controller.checkForUpdates()
+        }
+        .disabled(!controller.canCheckForUpdates)
     }
 }
 

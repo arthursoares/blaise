@@ -74,6 +74,8 @@ choose, which is off by default.
   accent-insensitive matching.
 - **Export notes as a PDF.** Three styles (Atlas, Ledger, Clean), A4 or Letter, Save…
   or Share; rendered offline from the stored notes with no external resources.
+- **Updates itself.** Release builds check the release feed once a day and offer a new
+  version in place (Sparkle); nothing installs without a click. Local builds never check.
 
 ## Privacy model
 

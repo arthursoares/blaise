@@ -1,9 +1,7 @@
 # Shared toolchain resolution for Blaise scripts. Sourced, not executed.
 #
-# The Xcode license is not accepted on this machine, so anything routed
-# through xcrun/xcodebuild/DEVELOPER_DIR exits 69. We invoke the Xcode
-# toolchain's swift directly with an explicit SDKROOT, which never trips the
-# license check.
+# Invoke the toolchain directly with an explicit SDKROOT and DEVELOPER_DIR
+# pinned to the same Xcode so every lookup agrees.
 
 # Prefer the canonical /Applications/Xcode.app, then any versioned install
 # (Xcode_26.3.app, …) that ships a macOS 26 SDK. First match wins.
@@ -24,6 +22,9 @@ if [ -z "$XCODE_DEV" ]; then
 fi
 
 PLAT="$XCODE_DEV/Platforms/MacOSX.platform/Developer"
+# Pin every toolchain lookup (swift-testing macros, xcrun) to the same Xcode the
+# compiler comes from; the machine default may be a newer Xcode.
+export DEVELOPER_DIR="$XCODE_DEV"
 SWIFT="$XCODE_DEV/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift"
 
 SDKROOT="$(ls -d "$PLAT"/SDKs/MacOSX26*.sdk | head -1)"

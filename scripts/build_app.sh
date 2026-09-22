@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/env.sh"
 
 cd "$ROOT/app"
-"$SWIFT" build -c release --product Blaise
+"$SWIFT" build -c release --product Blaise -Xlinker -rpath -Xlinker @executable_path/../Frameworks
 
 APP="$ROOT/dist/Blaise.app"
 rm -rf "$APP"
@@ -17,6 +17,12 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # register `dist/Blaise.app` as a second install merely because it exists.
 touch "$ROOT/dist/.metadata_never_index"
 cp "$ROOT/app/.build/release/Blaise" "$APP/Contents/MacOS/Blaise"
+if [[ ! -d "$ROOT/app/.build/release/Sparkle.framework" ]]; then
+    echo "error: Sparkle.framework is missing from the release build products" >&2
+    exit 1
+fi
+mkdir -p "$APP/Contents/Frameworks"
+cp -RP "$ROOT/app/.build/release/Sparkle.framework" "$APP/Contents/Frameworks/"
 
 # SwiftPM resource bundles (Bundle.module looks for them in the main
 # bundle's Resources). BlaiseCore's carries python drivers +
@@ -58,9 +64,14 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleVersion</key>
 	<string>__BLAISE_BUILD_NUMBER__</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.7.0</string>
+	<string>1.8.0</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.6.1</string>
+	__BLAISE_SPARKLE_FEED_URL__
+	__BLAISE_SPARKLE_PUBLIC_KEY__
+	__BLAISE_SPARKLE_AUTOMATIC_CHECKS__
+	__BLAISE_SPARKLE_CHECK_INTERVAL__
+	__BLAISE_SPARKLE_AUTOMATIC_UPDATES__
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
@@ -88,6 +99,22 @@ if [[ ! "$BLAISE_APP_DISPLAY_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._\ -]*$ ]]; then
 fi
 sed -i '' "s/__BLAISE_BUNDLE_ID__/$BLAISE_BUNDLE_ID/" "$APP/Contents/Info.plist"
 sed -i '' "s/__BLAISE_DISPLAY_NAME__/$BLAISE_APP_DISPLAY_NAME/g" "$APP/Contents/Info.plist"
+
+if [[ "${BLAISE_RELEASE_SIGN:-}" == "1" ]]; then
+    if [[ -z "${BLAISE_SPARKLE_PUBLIC_KEY:-}" ]]; then
+        echo "error: BLAISE_RELEASE_SIGN=1 requires BLAISE_SPARKLE_PUBLIC_KEY" >&2
+        exit 1
+    fi
+    sed -i '' \
+        -e 's|__BLAISE_SPARKLE_FEED_URL__|<key>SUFeedURL</key><string>https://raw.githubusercontent.com/ricardojustus/blaise/main/appcast.xml</string>|' \
+        -e "s|__BLAISE_SPARKLE_PUBLIC_KEY__|<key>SUPublicEDKey</key><string>$BLAISE_SPARKLE_PUBLIC_KEY</string>|" \
+        -e 's|__BLAISE_SPARKLE_AUTOMATIC_CHECKS__|<key>SUEnableAutomaticChecks</key><true/>|' \
+        -e 's|__BLAISE_SPARKLE_CHECK_INTERVAL__|<key>SUScheduledCheckInterval</key><integer>86400</integer>|' \
+        -e 's|__BLAISE_SPARKLE_AUTOMATIC_UPDATES__|<key>SUAllowsAutomaticUpdates</key><false/>|' \
+        "$APP/Contents/Info.plist"
+else
+    sed -i '' '/__BLAISE_SPARKLE_/d' "$APP/Contents/Info.plist"
+fi
 
 # Launch Services and Notification Center both cache app identity by bundle
 # version. Replacing many different binaries while hard-coding build `2` left
@@ -144,6 +171,13 @@ if [[ "${BLAISE_RELEASE_SIGN:-}" == "1" ]]; then
         echo "error: candidates: security find-identity -v -p codesigning" >&2
         exit 1
     fi
+    FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+    codesign -s "$IDENTITY" --force --options runtime --timestamp "$FRAMEWORK/Versions/B/XPCServices/Installer.xpc"
+    codesign -s "$IDENTITY" --force --options runtime --timestamp \
+        --preserve-metadata=entitlements "$FRAMEWORK/Versions/B/XPCServices/Downloader.xpc"
+    codesign -s "$IDENTITY" --force --options runtime --timestamp "$FRAMEWORK/Versions/B/Autoupdate"
+    codesign -s "$IDENTITY" --force --options runtime --timestamp "$FRAMEWORK/Versions/B/Updater.app"
+    codesign -s "$IDENTITY" --force --options runtime --timestamp "$FRAMEWORK"
     codesign -s "$IDENTITY" --force --options runtime --timestamp "$APP/Contents/Resources/uv"
     codesign -s "$IDENTITY" --force --options runtime --timestamp \
         --entitlements "$ROOT/scripts/entitlements.plist" "$APP"

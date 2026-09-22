@@ -26,6 +26,7 @@ let package = Package(
         // is an open subset (engine-authored), so the HTML derivation reads a
         // real parse tree instead of a hand converter. Resolves swift-cmark too.
         .package(url: "https://github.com/swiftlang/swift-markdown.git", exact: "0.8.0"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0"),
     ],
     targets: [
         .target(
@@ -61,6 +62,7 @@ let package = Package(
             dependencies: [
                 "BlaiseCore",
                 .product(name: "Pow", package: "Pow"),
+                .product(name: "Sparkle", package: "Sparkle"),
             ]
         ),
         // C7 crash harness child process (scripts/c7_crash_harness.sh): runs

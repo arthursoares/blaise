@@ -2,6 +2,21 @@
 
 All notable changes to Blaise are documented here. Dates are DD/MM/YYYY.
 
+## [1.8.0] — 22/09/2026
+
+In-app updates.
+
+### Added
+- **Automatic updates.** Blaise checks the release feed once a day and offers a new
+  version in place: release notes in the dialog, one click to install, relaunch on the
+  new build. **Blaise → Check for Updates…** checks on demand. Nothing installs without a
+  click. Powered by Sparkle 2.10.0; every download is EdDSA-signed on top of the notarised
+  Developer ID signature, and only release builds carry the feed and key.
+
+### Known limit
+- With a sheet open (participant confirmation, PDF export), "Install and Relaunch" is
+  refused by macOS and the update installs at the next quit instead.
+
 ## [1.7.0] — 09/09/2026
 
 Meeting notes export to PDF.
