@@ -1,0 +1,44 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Blaise</title>
+        <item>
+            <title>1.8.0</title>
+            <pubDate>Tue, 22 Sep 2026 16:28:44 -0300</pubDate>
+            <link>https://github.com/ricardojustus/blaise/releases/tag/v1.8.0</link>
+            <sparkle:version>361</sparkle:version>
+            <sparkle:shortVersionString>1.8.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.6.1</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Blaise 1.8.0 — the app now updates itself
+
+From this version on, Blaise checks for a new release once a day and offers it in place:
+a dialog with the release notes, one click to install, and the app relaunches on the new
+build. There is also **Blaise → Check for Updates…** for whenever you want to look yourself.
+
+## What changed
+
+- **In-app updates via Sparkle 2.10.0.** Daily check, silent when there is nothing new.
+  Nothing is ever downloaded or installed without your click; the "install automatically"
+  option is deliberately not offered.
+- **Signed twice.** Every update is a notarised, Developer-ID-signed build, and the
+  download itself carries an EdDSA signature that the app verifies against a key baked in
+  at build time. A build without that key (a local `swift build`, a fork) never checks a feed.
+- **Known limit.** If a sheet is open in Blaise (say, the participant confirmation on a
+  meeting) when you click "Install and Relaunch", macOS refuses the quit and nothing visible
+  happens; the update installs the next time you quit Blaise. Close the sheet first, or just
+  quit and reopen.
+- **Upgrading from 1.7.0:** this is the last version you download by hand. Same signing
+  identity, no permission re-prompts; meetings, transcripts, notes and settings untouched.
+
+## Assets
+
+- `Blaise-1.8.0.zip` — the notarised, stapled app (macOS 15.6.1+, Apple Silicon;
+  fully tested on macOS 26 and 27)
+- `blaise-meet-extension.zip` — the Chrome extension for Google Meet
+  participant/speaker signals (unchanged)
+]]></description>
+            <enclosure url="https://github.com/ricardojustus/blaise/releases/download/v1.8.0/Blaise-1.8.0.zip" length="32634471" type="application/octet-stream" sparkle:edSignature="fKV4Ftj55yBDTxDv5XZmSQGJ0wOu0Uamo+FZg8jQ4ivNflRM86wfv3f6IJ0V+7yqfnAMYgZV/QdnVlNbDgnBCQ=="/>
+        </item>
+    </channel>
+</rss>
