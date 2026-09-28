@@ -3,6 +3,46 @@
     <channel>
         <title>Blaise</title>
         <item>
+            <title>1.9.0</title>
+            <pubDate>Sun, 27 Sep 2026 23:56:45 -0300</pubDate>
+            <link>https://github.com/ricardojustus/blaise/releases/tag/v1.9.0</link>
+            <sparkle:version>383</sparkle:version>
+            <sparkle:shortVersionString>1.9.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.6.1</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Blaise 1.9.0 — no more silent mic-only recordings
+
+If macOS ever records your microphone but not the other side of the call, Blaise now tells
+you while the meeting is still going, instead of leaving you to find out afterwards.
+Contributed by Arthur Soares (@arthursoares) in #15.
+
+## What changed
+
+- **Missing call audio is visible.** An orange banner in the main window, a card in the
+  menu-bar menu and one notification (no sound) per episode. Quiet calls are fine: silence
+  still counts as audio arriving.
+- **Blaise tries to fix it.** Two automatic repairs, then a **Retry Call Audio** button and a
+  shortcut to the audio permission settings. If a repair keeps failing while call audio is
+  already missing, Blaise keeps recording your microphone instead of stopping.
+- **The meeting remembers.** Affected meetings are marked **Capture incomplete** in the
+  library, and the note survives reprocessing, because audio that was never captured cannot
+  come back.
+- **A start-of-recording bug is fixed.** A disk write failure in the first moments of a
+  recording could leave it looking live while nothing was saved. It now stops and keeps
+  what exists, like any other write failure.
+- **Upgrading from 1.8.0:** delivered in place by the updater. Meetings, transcripts, notes
+  and settings untouched.
+
+## Assets
+
+- `Blaise-1.9.0.zip` — the notarised, stapled app (macOS 15.6.1+, Apple Silicon;
+  fully tested on macOS 26 and 27)
+- `blaise-meet-extension.zip` — the Chrome extension for Google Meet
+  participant/speaker signals (unchanged)
+]]></description>
+            <enclosure url="https://github.com/ricardojustus/blaise/releases/download/v1.9.0/Blaise-1.9.0.zip" length="32663330" type="application/octet-stream" sparkle:edSignature="VHk8caM0c0pNm0ibNKEHNV+ddtx/pUdUM76w4nZ2dTPiR+4GN8kDf1TMBjAO6/bV3QZSFUCRui0PSWdNHxxFDA=="/>
+        </item>
+        <item>
             <title>1.8.0</title>
             <pubDate>Tue, 22 Sep 2026 16:28:44 -0300</pubDate>
             <link>https://github.com/ricardojustus/blaise/releases/tag/v1.8.0</link>
