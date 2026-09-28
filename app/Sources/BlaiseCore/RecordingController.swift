@@ -15,6 +15,9 @@ public enum CaptureEngineEvent: Sendable, Equatable {
     /// Mic all-zero ≥ 60 s while system audio is active (true), or the mic
     /// signal returned (false).
     case micSilence(active: Bool)
+    /// The graph exposes no usable system audio stream, or its frames have
+    /// stalled; silence alone is not failure.
+    case systemAudioUnavailable(active: Bool)
     /// B4 (audit): the capture graph has been DOWN through a route-change
     /// rebuild for longer than `CaptureSession.captureDownAlarmSeconds`
     /// (true), or a rebuild succeeded and capture resumed (false). Unlike
@@ -33,9 +36,9 @@ public enum CaptureEngineEvent: Sendable, Equatable {
 }
 
 /// What the engine learned at graph build, returned from `start` so the
-/// controller can act on it AFTER the `.started` event (an `onEvent` fired
-/// during start races the started emission and gets erased by the state
-/// machine's start reset).
+/// controller can act on it AFTER the `.started` event. It is the
+/// authoritative initial stream report; `onEvent` callbacks fired during
+/// start are held and replayed in order after `.started`.
 public struct CaptureStartInfo: Sendable, Equatable {
     /// Input-device stream count; 0 = the mic track will stay empty and
     /// the silence detector can never fire (no data) — warn at start.
@@ -52,6 +55,7 @@ public protocol AudioCapturing: Sendable {
         onEvent: @escaping @Sendable (CaptureEngineEvent) -> Void
     ) async throws -> CaptureStartInfo
     func stop() async
+    func retrySystemAudio() async
 }
 
 // MARK: - Controller
@@ -195,6 +199,7 @@ public final class RecordingLifecycleObserverBox: RecordingLifecycleObserving, S
 public enum RecordingEvent: Sendable, Equatable {
     case started(meetingID: MeetingID, at: Date)
     case micSilence(active: Bool)
+    case systemAudioUnavailable(active: Bool)
     /// B4 (audit): capture graph down/up during a route-change rebuild.
     case captureDown(active: Bool)
     /// The engine is down and the encode is running — emitted immediately
@@ -237,6 +242,8 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
         /// 1-based capture part this session writes (C14 multi-part).
         var partIndex: Int
         var stopping = false
+        /// The part's engine-event channel; finished once the engine stops.
+        var engineEvents: AsyncStream<CaptureEngineEvent>.Continuation
     }
 
     private var active: ActiveSession?
@@ -357,6 +364,12 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
         }
     }
 
+    /// Retry the live graph without stopping the microphone or opening another part.
+    public func retrySystemAudio() async {
+        guard let session = active, !session.stopping else { return }
+        await engine.retrySystemAudio()
+    }
+
     // MARK: - Start
 
     /// Creates the Meeting row (`status = recording`), starts the capture
@@ -443,15 +456,16 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
         }
 
         let startInfo: CaptureStartInfo
+        let channel = engineEventChannel(meetingID: meeting.id, partIndex: 1)
         do {
             let meetingID = meeting.id
             startInfo = try await engine.start(
                 systemCAF: database.paths.captureCAFURL(meetingID, track: .system),
                 micCAF: database.paths.captureCAFURL(meetingID, track: .mic),
-                onEvent: { [weak self] event in
-                    Task { await self?.handleEngineEvent(event) }
-                })
+                onEvent: channel.onEvent)
         } catch {
+            channel.sink.finish()
+            deliverEngineEvents(channel.events, meetingID: meeting.id, partIndex: 1)
             // Honest failure: the row stays, marked failed (never deleted).
             try? await database.pool.write { db in
                 try db.execute(
@@ -477,7 +491,7 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
         if captureFactsWritePending {
             pendingCaptureFacts[meeting.id] = captureFacts
         }
-        active = ActiveSession(meeting: meeting, partIndex: 1)
+        active = ActiveSession(meeting: meeting, partIndex: 1, engineEvents: channel.sink)
         emit(.started(meetingID: meeting.id, at: startedAt))
         if startInfo.micStreams == 0 {
             // Deterministically AFTER .started (the state machine's start
@@ -487,6 +501,7 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
             logger.error("input device exposes no streams; mic track will be EMPTY")
             emit(.micSilence(active: true))
         }
+        deliverEngineEvents(channel.events, meetingID: meeting.id, partIndex: 1)
         logger.notice("recording started: \(meeting.id) source=\(source.rawValue)")
         let observer = self.observer
         let started = meeting
@@ -537,14 +552,15 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
             startedAtMs: Int64(resumedAt.timeIntervalSince1970 * 1000))
 
         let startInfo: CaptureStartInfo
+        let channel = engineEventChannel(meetingID: meetingID, partIndex: part)
         do {
             startInfo = try await engine.start(
                 systemCAF: database.paths.captureCAFURL(meetingID, track: .system, part: part),
                 micCAF: database.paths.captureCAFURL(meetingID, track: .mic, part: part),
-                onEvent: { [weak self] event in
-                    Task { await self?.handleEngineEvent(event) }
-                })
+                onEvent: channel.onEvent)
         } catch {
+            channel.sink.finish()
+            deliverEngineEvents(channel.events, meetingID: meetingID, partIndex: part)
             // The meeting stays in grace (status `recording`, earlier parts
             // intact); grace expiry finalizes them. Zero-frame stubs are
             // removed (the C1 rule) and the fresh row follows its files.
@@ -554,12 +570,13 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
             throw error
         }
 
-        active = ActiveSession(meeting: meeting, partIndex: part)
+        active = ActiveSession(meeting: meeting, partIndex: part, engineEvents: channel.sink)
         emit(.started(meetingID: meetingID, at: resumedAt))
         if startInfo.micStreams == 0 {
             logger.error("input device exposes no streams; mic track will be EMPTY")
             emit(.micSilence(active: true))
         }
+        deliverEngineEvents(channel.events, meetingID: meetingID, partIndex: part)
         logger.notice("recording resumed: \(meetingID) part=\(part)")
         let observer = self.observer
         let resumed = meeting
@@ -594,6 +611,7 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
         var meeting = session.meeting
 
         await engine.stop()
+        session.engineEvents.finish()
 
         let pausedAt = now()
         let pausedAtMs = Int64(pausedAt.timeIntervalSince1970 * 1000)
@@ -693,14 +711,15 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
 
         // Engine + new-part CAFs FIRST (M-7).
         let startInfo: CaptureStartInfo
+        let channel = engineEventChannel(meetingID: meetingID, partIndex: part)
         do {
             startInfo = try await engine.start(
                 systemCAF: database.paths.captureCAFURL(meetingID, track: .system, part: part),
                 micCAF: database.paths.captureCAFURL(meetingID, track: .mic, part: part),
-                onEvent: { [weak self] event in
-                    Task { await self?.handleEngineEvent(event) }
-                })
+                onEvent: channel.onEvent)
         } catch {
+            channel.sink.finish()
+            deliverEngineEvents(channel.events, meetingID: meetingID, partIndex: part)
             // Engine-start failure: stays `paused`, earlier parts intact. The
             // header-only stubs of the failed part are zero-frame-removed; no
             // part row was written, so there is nothing to delete.
@@ -723,13 +742,15 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
             // the meeting stays durably `paused`, the error surfaces.
             logger.error("resume-from-pause commit failed for \(meetingID): \(error) — engine torn down")
             await engine.stop()
+            channel.sink.finish()
+            deliverEngineEvents(channel.events, meetingID: meetingID, partIndex: part)
             throw error
         }
         meeting.status = .recording
         meeting.endedAt = nil
         meeting.updatedAt = resumedAt
 
-        active = ActiveSession(meeting: meeting, partIndex: part)
+        active = ActiveSession(meeting: meeting, partIndex: part, engineEvents: channel.sink)
         let accumulated = await CaptureParts.accumulatedRecordedSeconds(
             database, meetingID: meetingID)
         emit(.resumed(meetingID: meetingID, at: resumedAt, accumulatedSeconds: accumulated))
@@ -738,6 +759,7 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
             logger.error("input device exposes no streams; mic track will be EMPTY")
             emit(.micSilence(active: true))
         }
+        deliverEngineEvents(channel.events, meetingID: meetingID, partIndex: part)
         logger.notice("recording resumed from pause: \(meetingID) part=\(part)")
         let observer = self.observer
         let resumed = meeting
@@ -923,6 +945,7 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
         let partIndex = session.partIndex
 
         await engine.stop()
+        session.engineEvents.finish()
 
         var meeting = session.meeting
         let stoppedAt = now()
@@ -1053,10 +1076,53 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
             scheduledEndMs: meeting.scheduledEndMs)
     }
 
-    private func handleEngineEvent(_ event: CaptureEngineEvent) async {
+    /// A capture part's engine callbacks, held in emission order until the
+    /// part is live (or its start has failed), then drained by the single
+    /// consumer `deliverEngineEvents` starts. A callback arriving after the
+    /// channel is finished (the part's engine already stopped) is delivered
+    /// on its own; the part is no longer live, so only durable facts apply.
+    private func engineEventChannel(meetingID: MeetingID, partIndex: Int) -> (
+        events: AsyncStream<CaptureEngineEvent>,
+        sink: AsyncStream<CaptureEngineEvent>.Continuation,
+        onEvent: @Sendable (CaptureEngineEvent) -> Void
+    ) {
+        let (events, sink) = AsyncStream.makeStream(of: CaptureEngineEvent.self)
+        let onEvent: @Sendable (CaptureEngineEvent) -> Void = { [weak self] event in
+            if case .terminated = sink.yield(event) {
+                Task { await self?.handleEngineEvent(event, meetingID: meetingID, partIndex: partIndex) }
+            }
+        }
+        return (events, sink, onEvent)
+    }
+
+    /// The part's single, in-order consumer. Ends once the channel is
+    /// finished and its buffered events have drained.
+    private func deliverEngineEvents(
+        _ events: AsyncStream<CaptureEngineEvent>, meetingID: MeetingID, partIndex: Int
+    ) {
+        Task { [weak self] in
+            for await event in events {
+                await self?.handleEngineEvent(event, meetingID: meetingID, partIndex: partIndex)
+            }
+        }
+    }
+
+    private func handleEngineEvent(
+        _ event: CaptureEngineEvent, meetingID: MeetingID, partIndex: Int
+    ) async {
+        // Callbacks may be handled after stop, pause, or a later start.
+        // Their durable facts belong to their original meeting; only the
+        // currently live part may drive UI or stop the engine.
+        let belongsToLivePart = active.map {
+            $0.meeting.id == meetingID && $0.partIndex == partIndex && !$0.stopping
+        } ?? false
+        if case .systemAudioUnavailable(true) = event { persistSystemAudioUnavailable(meetingID: meetingID) }
+        guard belongsToLivePart else { return }
         switch event {
         case .micSilence(let activeNow):
             emit(.micSilence(active: activeNow))
+        case .systemAudioUnavailable(let activeNow):
+            emit(.systemAudioUnavailable(active: activeNow))
         case .captureDown(let activeNow):
             emit(.captureDown(active: activeNow))
         case .level(let you, let others):
@@ -1068,6 +1134,18 @@ public actor RecordingController: RecordingSessionProviding, RecordingAutomating
             // and a re-record offer is correct).
             _ = try? await performStop(
                 alarm: "Recording stopped: \(message)", manual: false, kickProcessing: true)
+        }
+    }
+
+    /// Fire-and-forget: a busy database writer must never delay the part's
+    /// later events (a write failure stops the recording immediately). The
+    /// note merge is idempotent, so the order of these writes is irrelevant.
+    private func persistSystemAudioUnavailable(meetingID: MeetingID) {
+        let database = self.database
+        Task {
+            await CaptureRecovery.writeRecoveryNote(
+                database: database, meetingID: meetingID,
+                note: CaptureRecovery.unavailableIntervalNote)
         }
     }
 

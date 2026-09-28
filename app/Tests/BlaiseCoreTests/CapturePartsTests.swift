@@ -64,6 +64,7 @@ private final class PartsMockEngine: AudioCapturing, @unchecked Sendable {
     }
 
     func stop() async {}
+    func retrySystemAudio() async {}
 }
 
 private struct PartsHarness {

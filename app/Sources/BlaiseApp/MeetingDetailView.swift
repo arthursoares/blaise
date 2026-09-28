@@ -686,10 +686,14 @@ private struct NotesPane: View {
                     if let note = meeting.processingNote, !note.isEmpty {
                         HStack(alignment: .top, spacing: 8) {
                             QuietBanner(
-                                text: note, systemImage: "info.circle", tint: .secondary,
+                                text: note,
+                                systemImage: note.hasPrefix(CaptureRecovery.notePrefix) ? "exclamationmark.triangle" : "info.circle",
+                                tint: note.hasPrefix(CaptureRecovery.notePrefix) ? .orange : .secondary,
                                 accessibilityPrefix: "Processing note")
                             // C11: a capture-recovery note survives runs until a
-                            // both-tracks run completes OR the user dismisses it.
+                            // both-tracks run completes OR the user dismisses it;
+                            // an unavailable call-audio interval survives until
+                            // dismissed.
                             if note.hasPrefix(CaptureRecovery.notePrefix) {
                                 Button {
                                     let database = appEnv.database
@@ -703,7 +707,7 @@ private struct NotesPane: View {
                                 }
                                 .buttonStyle(.plain)
                                 .accessibilityLabel("Dismiss capture recovery note")
-                                .help("Dismiss this note (the damaged capture file stays on disk)")
+                                .help("Dismiss this note (recorded audio is not affected)")
                             }
                         }
                     }

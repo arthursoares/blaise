@@ -58,6 +58,14 @@ final class CaptureStatusHolder {
     /// short reconnect cushion ending at this deadline.
     var meetingEndPendingUntil: Date?
 
+    static let audioSettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
+
+    var systemAudioUnavailable: Bool { machine.systemAudioUnavailable }
+
+    var showsMissingCallAudio: Bool {
+        isRecording && machine.systemAudioUnavailable && !machine.captureDown
+    }
+
     private var machine = IndicatorStateMachine()
 
     func apply(_ input: IndicatorStateMachine.Input) {
@@ -385,6 +393,16 @@ struct RecordingMenuView: View {
                 }
             }
 
+            if status.showsMissingCallAudio {
+                RecordingMenuCard(tint: .orange) {
+                    Label("Call audio unavailable", systemImage: "exclamationmark.triangle.fill")
+                        .font(.headline)
+                    Text(IndicatorStateMachine.missingCallAudioMessage)
+                    Text("Check Blaise’s permission in Screen & System Audio Recording, then retry.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    MissingCallAudioActions()
+                }
+            }
             automationStatusCard
         }
         .padding(12)

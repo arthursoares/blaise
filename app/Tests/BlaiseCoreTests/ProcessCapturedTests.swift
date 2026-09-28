@@ -284,6 +284,41 @@ struct ProcessCapturedTests {
         #expect(afterHealed.processingNote == nil)
     }
 
+    @Test("earlier call-audio outage survives successful two-track processing and regeneration")
+    func unavailableIntervalSurvivesRegeneration() async throws {
+        let harness = try await makePipelineHarness()
+        let note = "\(CaptureRecovery.notePrefix) \(CaptureRecovery.unavailableIntervalMarker); some call audio may be missing"
+        let meeting = try await harness.plantCapturedMeeting(
+            tracks: [.system, .mic], processingNote: note, captured: true)
+
+        let initial = try await harness.pipeline.processCaptured(meetingID: meeting.id)
+        #expect(initial.capturedTracks == ["system", "mic"])
+        let afterInitial = try #require(try await harness.meeting(meeting.id))
+        #expect(afterInitial.status == .ready)
+        #expect(afterInitial.processingNote == note)
+
+        let regenerated = try await harness.pipeline.regenerate(meetingID: meeting.id)
+        #expect(regenerated.capturedTracks == ["system", "mic"])
+        #expect(harness.asr.state.withLock { $0.requests.count } == 4)
+        let afterRegeneration = try #require(try await harness.meeting(meeting.id))
+        #expect(afterRegeneration.status == .ready)
+        #expect(afterRegeneration.processingNote == note)
+        #expect(regenerated.payloadPath != nil)
+    }
+
+    @Test("a two-track run keeps only the unavailable-interval fact of a merged recovery note")
+    func twoTrackRunKeepsOnlyUnavailableInterval() async throws {
+        let harness = try await makePipelineHarness()
+        let merged = "\(CaptureRecovery.unavailableIntervalNote); mic track part 2 audio damaged (truncated; CAF retained)"
+        let meeting = try await harness.plantCapturedMeeting(
+            tracks: [.system, .mic], processingNote: merged, captured: true)
+
+        _ = try await harness.pipeline.processCaptured(meetingID: meeting.id)
+        let after = try #require(try await harness.meeting(meeting.id))
+        #expect(after.status == .ready)
+        #expect(after.processingNote == CaptureRecovery.unavailableIntervalNote)
+    }
+
     @Test("capture-recovery note survives a FAILED run too")
     func noteSurvivesFailure() async throws {
         let harness = try await makePipelineHarness()

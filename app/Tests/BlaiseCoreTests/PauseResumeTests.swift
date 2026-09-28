@@ -56,6 +56,7 @@ private final class PauseMockEngine: AudioCapturing, @unchecked Sendable {
     }
 
     func stop() async { state.withLock { $0.stopCalls += 1 } }
+    func retrySystemAudio() async {}
     func emit(_ event: CaptureEngineEvent) {
         let h = state.withLock { $0.onEvent }
         h?(event)
@@ -140,6 +141,7 @@ private final class GatedPauseEngine: AudioCapturing, @unchecked Sendable {
     }
 
     func stop() async { stops.withLock { $0 += 1 } }
+    func retrySystemAudio() async {}
     func stopCalls() -> Int { stops.withLock { $0 } }
 }
 

@@ -5,7 +5,7 @@ the tests, and the rules a pull request needs to follow.
 
 ## Prerequisites
 
-- **macOS 26 or later** and **Xcode 26** for the app and its tests.
+- **macOS 26 or later** and an **Xcode installation with a macOS 26 or newer SDK** for the app and its tests. The scripts prefer macOS 26 when it is installed.
 - **Node.js 22 or later** for the Chrome extension's test suite.
 
 The app is a pure Swift Package Manager project — there is no `.xcodeproj`. The

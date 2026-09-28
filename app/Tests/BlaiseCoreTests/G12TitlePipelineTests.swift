@@ -37,6 +37,7 @@ private final class G12MockEngine: AudioCapturing, @unchecked Sendable {
     }
 
     func stop() async {}
+    func retrySystemAudio() async {}
 }
 
 private func makeG12Controller(_ database: BlaiseDatabase) -> RecordingController {

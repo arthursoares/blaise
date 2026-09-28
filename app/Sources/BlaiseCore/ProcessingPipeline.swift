@@ -2797,7 +2797,8 @@ public actor ProcessingPipeline {
         await meetEventsSweeper.sweep(meetingID: meetingID)
         // Entry: clear processingNote (EVERY run — except the capture-
         // recovery class, which survives until a both-tracks run completes
-        // or the user dismisses it; C7 v3.3); process() also flips status
+        // or the user dismisses it, and whose unavailable call-audio interval
+        // survives even that; C7 v3.3); process() also flips status
         // to .processing. Throws (unrecorded) if the meeting is gone.
         let meeting = try await writeRunEntry(meetingID: meetingID, regeneration: regeneration)
         emit(.runStarted(meetingID, regeneration: regeneration))
@@ -3194,7 +3195,8 @@ public actor ProcessingPipeline {
         // Terminal event (single writer): a successful run with a fallback
         // sets the fallback note; otherwise the entry-cleared nil stands.
         // Capture-recovery notes (the third writer class, C7 v3.3): cleared
-        // here ONLY when this run processed both tracks; a surviving
+        // here ONLY when this run processed both tracks (an unavailable
+        // call-audio interval is kept even then); a surviving
         // capture-recovery note wins over a fallback note (the retention
         // fact must stay visible until both tracks process or the user
         // dismisses it — the two never combine).
@@ -5851,7 +5853,8 @@ public actor ProcessingPipeline {
             }
             // Cleared at EVERY run entry — EXCEPT the capture-recovery class
             // (C7 v3.3 / C1 v6.6): that note survives until a run completes
-            // with both tracks or the user dismisses it.
+            // with both tracks or the user dismisses it (an unavailable
+            // call-audio interval survives a both-tracks run too).
             if meeting.processingNote?.hasPrefix(CaptureRecovery.notePrefix) != true {
                 meeting.processingNote = nil
             }
@@ -5923,7 +5926,8 @@ public actor ProcessingPipeline {
 
     /// Terminal note write (single writer per run). Reads the surviving note
     /// (entry cleared everything except a capture-recovery note):
-    /// - both tracks processed → the capture-recovery note clears;
+    /// - both tracks processed → the capture-recovery note clears, except
+    ///   an unavailable call-audio interval, which is kept on its own;
     /// - a fallback note is set only when no capture-recovery note survives
     ///   (the two classes never combine; the recovery fact wins).
     private func writeTerminalNote(
@@ -5936,7 +5940,10 @@ public actor ProcessingPipeline {
                 arguments: [meetingID])
             var note = current
             if clearCaptureRecovery, note?.hasPrefix(CaptureRecovery.notePrefix) == true {
-                note = nil
+                // Later recovery cannot restore an unavailable call-audio
+                // interval: that fact alone survives; other clauses clear.
+                note = note?.contains(CaptureRecovery.unavailableIntervalMarker) == true
+                    ? CaptureRecovery.unavailableIntervalNote : nil
             }
             if note?.hasPrefix(CaptureRecovery.notePrefix) != true {
                 var components: [String] = []

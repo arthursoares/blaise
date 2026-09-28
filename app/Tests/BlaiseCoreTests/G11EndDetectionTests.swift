@@ -142,6 +142,7 @@ private final class AnchorMockEngine: AudioCapturing, @unchecked Sendable {
         return CaptureStartInfo(micStreams: 1)
     }
     func stop() async {}
+    func retrySystemAudio() async {}
 }
 
 // MARK: - AC4: the durable-grace column writer + interrupted-flip exemption

@@ -453,6 +453,19 @@ struct RouteChangeResilienceTests {
         // user-visible ceiling for "recording still green but silent".
         #expect(delays.reduce(0, +) < 60)
     }
+
+    @Test("an exhausted ladder falls back to the microphone only when call audio was already missing")
+    func ladderExhaustion() {
+        for (attempt, delay) in CaptureSession.rebuildRetryDelays.enumerated() {
+            for unavailable in [false, true] {
+                #expect(CaptureSession.rebuildFailureAction(attempt: attempt, callAudioUnavailable: unavailable)
+                    == .retry(after: delay))
+            }
+        }
+        let exhausted = CaptureSession.rebuildRetryDelays.count
+        #expect(CaptureSession.rebuildFailureAction(attempt: exhausted, callAudioUnavailable: true) == .microphoneOnly)
+        #expect(CaptureSession.rebuildFailureAction(attempt: exhausted, callAudioUnavailable: false) == .stop)
+    }
 }
 
 // MARK: - CAF writer format assertions (AC1)

@@ -27,10 +27,15 @@ private final class MockCaptureEngine: AudioCapturing, @unchecked Sendable {
     struct State {
         var startCalls = 0
         var stopCalls = 0
+        var retryCalls = 0
         var onEvent: (@Sendable (CaptureEngineEvent) -> Void)?
         var startError: Error?
         var plantMode: PlantMode = .real
         var micStreams = 1
+        /// Emitted from inside `start()`, before it returns.
+        var eventsDuringStart: [CaptureEngineEvent] = []
+        /// Awaited inside `start()` after the CAFs are planted, before it returns.
+        var duringStart: (@Sendable () async -> Void)?
     }
 
     let state = Mutex(State())
@@ -60,12 +65,23 @@ private final class MockCaptureEngine: AudioCapturing, @unchecked Sendable {
         case .none:
             break
         }
+        if let duringStart = state.withLock({ $0.duringStart }) { await duringStart() }
+        for event in state.withLock({ $0.eventsDuringStart }) { onEvent(event) }
+        if !state.withLock({ $0.eventsDuringStart.isEmpty }) {
+            // Give any immediately scheduled delivery time to run while the
+            // controller is still awaiting this start.
+            try await Task.sleep(for: .milliseconds(100))
+        }
         if let error { throw error }
-        return CaptureStartInfo(micStreams: state.withLock { $0.micStreams })
+        return state.withLock { CaptureStartInfo(micStreams: $0.micStreams) }
     }
 
     func stop() async {
         state.withLock { $0.stopCalls += 1 }
+    }
+
+    func retrySystemAudio() async {
+        state.withLock { $0.retryCalls += 1 }
     }
 
     func emit(_ event: CaptureEngineEvent) {
@@ -95,6 +111,21 @@ private func makeControllerHarness(
         now: { msDate() },
         captureFactsWriter: captureFactsWriter)
     return ControllerHarness(database: database, engine: engine, controller: controller, kicks: kicks)
+}
+
+/// Occupies the database's single serial writer until the returned gate is
+/// signalled.
+private func holdWriter(_ database: BlaiseDatabase) async -> DispatchSemaphore {
+    let gate = DispatchSemaphore(value: 0)
+    let entered = Recorder<Bool>()
+    Task {
+        try await database.pool.write { _ in
+            entered.append(true)
+            gate.wait()
+        }
+    }
+    #expect(await waitUntil { !entered.values.isEmpty })
+    return gate
 }
 
 @Suite("C11 recording controller")
@@ -532,6 +563,220 @@ struct RecordingControllerTests {
         #expect(
             FileManager.default.fileExists(
                 atPath: database.paths.audioURL(meeting.id).path))
+    }
+
+    @Test("late callbacks cannot affect a new meeting or resumed part", arguments: [false, true])
+    func lateEngineCallbacksAreScoped(resumeSameMeeting: Bool) async throws {
+        let harness = try makeControllerHarness()
+        let original = try await harness.controller.start(source: .meet)
+        let oldCallback = try #require(harness.engine.state.withLock { $0.onEvent })
+        let current: Meeting
+        if resumeSameMeeting {
+            _ = try await harness.controller.pause()
+            current = try await harness.controller.resumePaused(meetingID: original.id)
+        } else {
+            _ = try await harness.controller.stop()
+            current = try await harness.controller.start(source: .meet)
+        }
+        let events = await harness.controller.events()
+        let collected = Recorder<RecordingEvent>()
+        let collector = Task { for await event in events { collected.append(event) } }
+        defer { collector.cancel() }
+        oldCallback(.micSilence(active: true))
+        oldCallback(.captureDown(active: true))
+        oldCallback(.level(you: 1, others: 1))
+        oldCallback(.writeFailure("late failure"))
+        oldCallback(.systemAudioUnavailable(active: false))
+        oldCallback(.systemAudioUnavailable(active: true))
+        #expect(await waitUntil {
+            let note = try? await MeetingRepository(database: harness.database).fetch(original.id)?.processingNote
+            return note?.contains(CaptureRecovery.unavailableIntervalMarker) == true
+        })
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(collected.values.isEmpty)
+        #expect(await harness.controller.currentSession()?.meetingID == current.id)
+        #expect(harness.engine.state.withLock { $0.stopCalls } == 1)
+        if !resumeSameMeeting {
+            #expect(try await MeetingRepository(database: harness.database).fetch(current.id)?.processingNote == nil)
+        }
+        _ = try await harness.controller.stop()
+    }
+
+    @Test("a write failure raised while start, grace resume or resume-from-pause is still running stops the recording", arguments: ["start", "grace", "pause"])
+    func writeFailureDuringStartStops(path: String) async throws {
+        let harness = try makeControllerHarness()
+        var meetingID: MeetingID?
+        if path != "start" {
+            meetingID = try await harness.controller.start(source: .meet).id
+            if path == "pause" {
+                _ = try await harness.controller.pause()
+            } else {
+                _ = try await harness.controller.autoStop(finalizeImmediately: false)
+            }
+        }
+        let events = await harness.controller.events()
+        let collected = Recorder<RecordingEvent>()
+        let collector = Task { for await event in events { collected.append(event) } }
+        defer { collector.cancel() }
+        harness.engine.state.withLock { $0.eventsDuringStart = [.writeFailure("disk full")] }
+        if let meetingID {
+            if path == "pause" {
+                _ = try await harness.controller.resumePaused(meetingID: meetingID)
+            } else {
+                _ = try await harness.controller.resume(meetingID: meetingID)
+            }
+        } else {
+            meetingID = try await harness.controller.start(source: .meet).id
+        }
+        #expect(await waitUntil { await harness.controller.currentSession() == nil })
+        #expect(await waitUntil {
+            collected.values.contains {
+                if case .stopped(meetingID, let alarm, _) = $0 { return alarm?.contains("disk full") == true }
+                return false
+            }
+        })
+        let started = try #require(collected.values.firstIndex { if case .started = $0 { true } else { false } })
+        let stopped = try #require(collected.values.firstIndex { if case .stopped = $0 { true } else { false } })
+        #expect(started < stopped)
+    }
+
+    @Test("a busy database writer never delays the write-failure stop", arguments: [false, true])
+    func busyWriterDoesNotDelayWriteFailureStop(duringStart: Bool) async throws {
+        let harness = try makeControllerHarness()
+        let gate = Recorder<DispatchSemaphore>()
+        defer { gate.values.forEach { $0.signal() } }
+        let starter: Task<Meeting, Error>
+        if duringStart {
+            harness.engine.state.withLock {
+                $0.eventsDuringStart = [.systemAudioUnavailable(active: true), .writeFailure("disk full")]
+                $0.duringStart = { gate.append(await holdWriter(harness.database)) }
+            }
+            starter = Task { try await harness.controller.start(source: .meet) }
+        } else {
+            let meeting = try await harness.controller.start(source: .meet)
+            starter = Task { meeting }
+            gate.append(await holdWriter(harness.database))
+            harness.engine.emit(.systemAudioUnavailable(active: true))
+            harness.engine.emit(.writeFailure("disk full"))
+        }
+        // The engine stop is initiated while the writer is still held.
+        #expect(await waitUntil(timeout: .seconds(2)) { harness.engine.state.withLock { $0.stopCalls } == 1 })
+        gate.values.forEach { $0.signal() }
+        let meeting = try await starter.value
+        #expect(await waitUntil { await harness.controller.currentSession() == nil })
+        #expect(await waitUntil {
+            let note = try? await MeetingRepository(database: harness.database).fetch(meeting.id)?.processingNote
+            return note?.contains(CaptureRecovery.unavailableIntervalMarker) == true
+        })
+    }
+
+    @Test("a part's engine events are handled in emission order")
+    func engineEventsKeepOrder() async throws {
+        let harness = try makeControllerHarness()
+        let sequence = (0..<200).map { $0 % 2 == 0 }  // true, false, …, ending false
+        harness.engine.state.withLock {
+            $0.eventsDuringStart = sequence.prefix(100).map { .systemAudioUnavailable(active: $0) }
+        }
+        let events = await harness.controller.events()
+        let collected = Recorder<RecordingEvent>()
+        let collector = Task { for await event in events { collected.append(event) } }
+        defer { collector.cancel() }
+        _ = try await harness.controller.start(source: .meet)
+        for active in sequence.dropFirst(100) { harness.engine.emit(.systemAudioUnavailable(active: active)) }
+        @Sendable func unavailableStates() -> [Bool] {
+            collected.values.compactMap { if case .systemAudioUnavailable(let active) = $0 { active } else { nil } }
+        }
+        #expect(await waitUntil { unavailableStates().count == sequence.count })
+        #expect(unavailableStates() == sequence)
+        #expect(unavailableStates().last == false)
+        _ = try await harness.controller.stop()
+    }
+
+    @Test("system audio retry forwards only while live and preserves the meeting part")
+    func retrySystemAudioOnlyWhileRecording() async throws {
+        let harness = try makeControllerHarness()
+        await harness.controller.retrySystemAudio()
+        #expect(harness.engine.state.withLock { $0.retryCalls } == 0)
+        let meeting = try await harness.controller.start(source: .meet)
+        await harness.controller.retrySystemAudio()
+        #expect(harness.engine.state.withLock { $0.retryCalls } == 1)
+        #expect(harness.engine.state.withLock { $0.startCalls } == 1)
+        #expect(await harness.controller.currentSession()?.meetingID == meeting.id)
+        _ = try await harness.controller.stop()
+        await harness.controller.retrySystemAudio()
+        #expect(harness.engine.state.withLock { $0.retryCalls } == 1)
+    }
+
+    @Test("missing system streams warn after started and persist the unavailable interval")
+    func zeroSystemStreamWarningOrdering() async throws {
+        let harness = try makeControllerHarness()
+        harness.engine.state.withLock { $0.eventsDuringStart = [.systemAudioUnavailable(active: true)] }
+        let events = await harness.controller.events()
+        let collected = Recorder<RecordingEvent>()
+        let collector = Task { for await event in events { collected.append(event) } }
+        defer { collector.cancel() }
+        let meeting = try await harness.controller.start(source: .meet)
+        #expect(await waitUntil { collected.values.contains(.systemAudioUnavailable(active: true)) })
+        let started = try #require(collected.values.firstIndex { if case .started = $0 { true } else { false } })
+        let warning = try #require(collected.values.firstIndex(of: .systemAudioUnavailable(active: true)))
+        #expect(started < warning)
+        #expect(await waitUntil {
+            let note = try? await MeetingRepository(database: harness.database).fetch(meeting.id)?.processingNote
+            return note?.contains(CaptureRecovery.unavailableIntervalMarker) == true
+        })
+        harness.engine.emit(.systemAudioUnavailable(active: false))
+        #expect(await waitUntil { collected.values.contains(.systemAudioUnavailable(active: false)) })
+        _ = try await harness.controller.stop()
+        #expect(collected.values.filter { $0 == .systemAudioUnavailable(active: true) }.count == 1)
+        let finalNote = try #require(try await MeetingRepository(database: harness.database).fetch(meeting.id)?.processingNote)
+        #expect(finalNote.contains(CaptureRecovery.unavailableIntervalMarker))
+    }
+
+    @Test("missing system streams warn after both grace and pause resume resets", arguments: [false, true])
+    func zeroSystemStreamsOnResume(fromPause: Bool) async throws {
+        let harness = try makeControllerHarness()
+        let meeting = try await harness.controller.start(source: .meet)
+        if fromPause {
+            _ = try await harness.controller.pause()
+        } else {
+            _ = try await harness.controller.autoStop(finalizeImmediately: false)
+        }
+        harness.engine.state.withLock { $0.eventsDuringStart = [.systemAudioUnavailable(active: true)] }
+        let events = await harness.controller.events()
+        let collected = Recorder<RecordingEvent>()
+        let collector = Task { for await event in events { collected.append(event) } }
+        defer { collector.cancel() }
+        if fromPause {
+            _ = try await harness.controller.resumePaused(meetingID: meeting.id)
+        } else {
+            _ = try await harness.controller.resume(meetingID: meeting.id)
+        }
+        #expect(await waitUntil { collected.values.contains(.systemAudioUnavailable(active: true)) })
+        let started = try #require(collected.values.firstIndex { if case .started = $0 { true } else { false } })
+        let warned = try #require(collected.values.firstIndex(of: .systemAudioUnavailable(active: true)))
+        #expect(started < warned)
+        _ = try await harness.controller.stop()
+    }
+
+    @Test("system warning coexists with mic and graph warnings and resets at start")
+    func systemWarningPriorityAndReset() {
+        var machine = IndicatorStateMachine()
+        let at = Date()
+        machine.apply(.captureStarted(at: at))
+        machine.apply(.systemAudioUnavailable(active: true))
+        #expect(machine.state == .warning(startedAt: at, message: "Call audio is not being recorded. Other participants will be missing from this recording."))
+        machine.apply(.micSilence(active: true))
+        guard case .warning(_, let both) = machine.state else { Issue.record("expected warning"); return }
+        #expect(both.contains("Call audio is not being recorded"))
+        #expect(both.contains("Mic appears silent"))
+        machine.apply(.captureDown(active: true))
+        guard case .warning(_, let down) = machine.state else { Issue.record("expected graph warning"); return }
+        #expect(down.contains("retrying"))
+        machine.apply(.captureDown(active: false))
+        machine.apply(.systemAudioUnavailable(active: false))
+        #expect(machine.state == .warning(startedAt: at, message: "Mic appears silent — check input device"))
+        machine.apply(.captureStarted(at: at))
+        #expect(machine.state == .recording(startedAt: at))
     }
 
     @Test("zero mic streams: warning emitted AFTER started (survives the state machine's start reset)")
