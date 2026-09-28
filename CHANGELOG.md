@@ -2,6 +2,21 @@
 
 All notable changes to Blaise are documented here. Dates are DD/MM/YYYY.
 
+## [1.9.0] — 27/09/2026
+
+Missing call audio is no longer silent. Contributed by Arthur Soares (@arthursoares), #15.
+
+### Added
+- **Missing-call-audio warning.** A banner, a menu-bar card and one silent notification
+  per episode when a recording captures the microphone but not the call; Retry Call Audio
+  and Open Audio Settings actions; affected meetings are marked **Capture incomplete**.
+- **Bounded recovery.** Two automatic repairs per recording part; if repairs run out while
+  call audio is already missing, recording continues on the microphone alone.
+
+### Fixed
+- A disk write failure in the first moments of a start or resume could leave a recording
+  looking live while nothing was written. It now stops and keeps what exists.
+
 ## [1.8.0] — 22/09/2026
 
 In-app updates.
