@@ -591,8 +591,8 @@ private func makeClaudeDigestPipelineHarness(
     @Test func promptVersionSettingSelectsV2AndTravelsInProvenance() async throws {
         // `notes.promptVersion` = "c6-v2" → the v2 system prompt is sent and
         // the provenance records what actually ran. Unset (the default
-        // harness) is covered by urlHeadersAndBodyShape (v1 prompt) and
-        // successMapsIntoNotesResultWithCost (provenance "c6-v1").
+        // harness) is covered by urlHeadersAndBodyShape (shipped prompt) and
+        // successMapsIntoNotesResultWithCost (shipped provenance).
         let harness = try await makeClaudeHarness()
         try await harness.settings.set(NotesPromptBuilder.versionSettingsKey, to: "c6-v2")
         let result = try await harness.engine.generateNotes(makeNotesRequest())

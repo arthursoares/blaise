@@ -2,6 +2,17 @@
 
 All notable changes to Blaise are documented here. Dates are DD/MM/YYYY.
 
+## [1.9.1] — 28/09/2026
+
+Notes on Sonnet 5.5.
+
+### Changed
+- **Subscription engine on Sonnet 5.5.** More accurate notes and digests in side-by-side tests, about twice as fast.
+  The API engine stays on Sonnet 4.6.
+- **Output limit 32,000 tokens** for the subscription engine, so long meetings' digests are not cut short.
+- **Notes prompt c6-v1.2 is the default.** It adds one rule: anything you say you will do yourself counts as your
+  action item, even when said in passing. Earlier versions stay selectable.
+
 ## [1.9.0] — 27/09/2026
 
 Missing call audio is no longer silent. Contributed by Arthur Soares (@arthursoares), #15.

@@ -394,7 +394,7 @@ private func makeCPHarness(
         let args = invocation.args
         #expect(args.contains("-p"))
         #expect(args.contains("--model"))
-        #expect(args.contains("claude-sonnet-4-6"))
+        #expect(args.contains("claude-sonnet-5-5"))
         #expect(args.contains("--effort") && args.contains("high"))
         #expect(args.contains("--max-turns") && args.contains("1"))
         #expect(args.contains("--system-prompt-file"))
@@ -407,7 +407,8 @@ private func makeCPHarness(
         #expect(args[args.index(after: outIdx)] == "json")
     }
 
-    /// (b) The child env carries the OAuth token + thinking-off vars and does NOT
+    /// (b) The child env carries the OAuth token + the 32000 output cap (no
+    /// thinking-control vars — Sonnet 5.5 ignores them) and does NOT
     /// carry ANTHROPIC_API_KEY (the env-hygiene boundary that makes the
     /// subscription auth work). Decision A: HOME is a FRESH throwaway temp dir
     /// (NOT the real injected home), so the CLI keeps no transcript cache.
@@ -416,9 +417,9 @@ private func makeCPHarness(
         _ = try await harness.engine.generateDigest(cpDigestRequest())
         let env = try #require(harness.invocations.values.first?.env)
         #expect(env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-test-token-not-real")
-        #expect(env["MAX_THINKING_TOKENS"] == "0")
-        #expect(env["CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"] == "1")
-        #expect(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "16384")
+        #expect(env["MAX_THINKING_TOKENS"] == nil)
+        #expect(env["CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"] == nil)
+        #expect(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "32000")
         // Decision A: HOME is a throwaway temp dir — NOT the injected real home —
         // so `claude -p` writes its `~/.claude` session cache somewhere disposable.
         let home = try #require(env["HOME"])
@@ -493,6 +494,25 @@ private func makeCPHarness(
         #expect(!args.contains("--json-schema"), "the digest path is schema-free")
         let turnsIdx = try #require(args.firstIndex(of: "--max-turns"))
         #expect(args[args.index(after: turnsIdx)] == "1", "the digest keeps --max-turns 1")
+    }
+
+    /// Unset `notes.promptVersion` → the account engine stages the v1.2 prompt
+    /// plus its output contract, records "c6-v1.2" in provenance, and leaves a
+    /// receipt on Sonnet 5.5.
+    @Test func defaultNotesCallRunsV12OnSonnet55() async throws {
+        let harness = try await makeCPHarness(responses: [
+            cpStructuredSuccess(structuredOutputJSON: cpNotesJSON),
+        ])
+        let result = try await harness.engine.generateNotes(makeNotesRequest())
+        let staged = try #require(harness.invocations.values.first?.systemPrompt)
+        let expected = NotesPromptBuilder.systemPrompt(for: .v12) + "\n\n"
+            + ClaudeCodeSummarizationEngine.notesJSONOutputContract
+        #expect(Array(staged.utf8) == Array(expected.utf8))
+        #expect(result.provenance.promptVersion == "c6-v1.2")
+        let models = try await harness.database.pool.read { db in
+            try String.fetchAll(db, sql: "SELECT model FROM cloud_spend_receipt")
+        }
+        #expect(models == ["claude-sonnet-5-5"])
     }
 
     /// The schema-validated `structured_output` object is read (mapped to a

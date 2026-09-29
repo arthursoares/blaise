@@ -28,10 +28,11 @@ public actor ClaudeCodeSummarizationEngine: SummarizationEngine, NotesEditingEng
     DigestEditingEngine
 {
     public static let engineID = "claude-cli"
-    /// The wire model the CLI runs — kept identical to the API engine's model so
-    /// the digest quality target (the validated shaping was tuned on Sonnet 4.6)
-    /// holds and the receipt model field is meaningful.
-    public static let model = "claude-sonnet-4-6"
+    /// The wire model the CLI runs. Deliberately NOT the API engine's model:
+    /// this engine runs Sonnet 5.5, while the API engine stays on Sonnet 4.6
+    /// because it sends `temperature`, which Sonnet 5.5 rejects. The receipt
+    /// model field carries this string.
+    public static let model = "claude-sonnet-5-5"
     /// OAuth token for the user's Claude subscription (`CLAUDE_CODE_OAUTH_TOKEN`),
     /// stored as a `.secret`.
     public static let oauthTokenConfigKey = "oauthToken"
@@ -80,8 +81,8 @@ public actor ClaudeCodeSummarizationEngine: SummarizationEngine, NotesEditingEng
 
     // MARK: - Tunables
 
-    /// Per-call subprocess timeout — a `-p` digest pass can be long (16k output
-    /// tokens at realistic rates), matching the API engine's retry-attempt cap.
+    /// Per-call subprocess timeout — a `-p` digest pass can be long (up to the
+    /// 32000-token output cap), matching the API engine's retry-attempt cap.
     static let callTimeout: TimeInterval = 480
     /// The bounded transient-retry ceiling (≤ 5) for an overloaded/5xx CLI
     /// envelope; backoff is `min(2^n, cap)` seconds.
@@ -271,8 +272,8 @@ public actor ClaudeCodeSummarizationEngine: SummarizationEngine, NotesEditingEng
 
     /// The EXPLICIT minimal child env — never the inherited GUI env, so
     /// `ANTHROPIC_API_KEY` is simply absent and the CLI authenticates with the
-    /// OAuth token alone. Thinking is turned fully off (the digest/notes are
-    /// extract-only, deterministic work).
+    /// OAuth token alone. No thinking-control vars (they have no effect on
+    /// Sonnet 5.5). The output cap is 32000.
     ///
     /// `home` is the THROWAWAY HOME the caller stages per invocation (deleted
     /// after the call) so the CLI keeps NO copy of the meeting transcript under a
@@ -289,9 +290,7 @@ public actor ClaudeCodeSummarizationEngine: SummarizationEngine, NotesEditingEng
             "PATH": "\(binDir):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
             "HOME": (home ?? homeDirectory).path,
             "CLAUDE_CODE_OAUTH_TOKEN": token,
-            "MAX_THINKING_TOKENS": "0",
-            "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1",
-            "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "16384",
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "32000",
         ]
     }
 

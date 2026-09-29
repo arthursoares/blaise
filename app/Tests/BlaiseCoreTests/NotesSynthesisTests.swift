@@ -225,8 +225,8 @@ let sampleEngineResponseJSON = """
     }
 
     @Test func shippedPromptVersionMatchesTheValidationVerdict() {
-        // The blind v1-vs-v2 validation decides the
-        // shipped default; the provenance string follows the selection.
+        // The provenance string and the default prompt both follow
+        // `shippedVersion`.
         #expect(NotesPromptBuilder.promptVersion == NotesPromptBuilder.shippedVersion.rawValue)
         #expect(NotesPromptBuilder.systemPrompt
             == NotesPromptBuilder.systemPrompt(for: NotesPromptBuilder.shippedVersion))
@@ -278,7 +278,32 @@ let sampleEngineResponseJSON = """
         #expect(NotesPromptBuilder.resolve("v1.1") == NotesPromptBuilder.shippedVersion)
         #expect(NotesPromptBuilder.resolve("c6-v1") == .v1)
         #expect(NotesPromptBuilder.resolve("c6-v1.1") == .v11)
+        #expect(NotesPromptBuilder.resolve("c6-v1.2") == .v12)
         #expect(NotesPromptBuilder.resolve("c6-v2") == .v2)
+    }
+
+    @Test func shippedDefaultIsV12AndExplicitV1StaysFrozen() {
+        #expect(NotesPromptBuilder.shippedVersion == .v12)
+        #expect(NotesPromptBuilder.resolve(nil) == .v12)
+        #expect(NotesPromptBuilder.resolve("garbage") == .v12)
+        #expect(NotesPromptBuilder.promptVersion == "c6-v1.2")
+        // An explicit "c6-v1" still selects the frozen v1 bytes.
+        let v1 = NotesPromptBuilder.systemPrompt(for: NotesPromptBuilder.resolve("c6-v1"))
+        #expect(v1 == NotesPromptBuilder.systemPromptV1)
+        #expect(!v1.contains("first-person statement"))
+    }
+
+    @Test func v12IsV1WithExactlyOneSentenceAtTheEndOfUserActionItems() throws {
+        let v1 = NotesPromptBuilder.systemPrompt(for: .v1)
+        let v12 = NotesPromptBuilder.systemPrompt(for: .v12)
+        let paragraphEnd = "the dedicated section is a view of the full list, not a partition of it."
+        let inserted = " A first-person statement by the user about something they will do after the meeting — \"I'll…\", \"I'm going to…\", \"let me…\", \"vou…\", \"eu vou…\", \"deixa que eu…\" — is a commitment the user owns even when said in passing or mid-story: it belongs in both lists, unless the user withdraws it or hands it to someone else later in the meeting."
+        let cut = try #require(v1.range(of: paragraphEnd)?.upperBound)
+        let expected = String(v1[..<cut]) + inserted + String(v1[cut...])
+        #expect(Array(v12.utf8) == Array(expected.utf8))
+        // Inserted inside the USER ACTION ITEMS paragraph, directly before the
+        // blank line that ends it.
+        #expect(v12.contains("later in the meeting.\n\nSPEAKER NAME MAPPING:"))
     }
 
     @Test func v11IsV1PlusOnlyTheTwoFieldFixBlocks() {

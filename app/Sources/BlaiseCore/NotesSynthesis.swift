@@ -104,6 +104,10 @@ public enum NotesPromptVersion: String, Sendable, CaseIterable {
     /// (Canonical)" parentheticals), and raw speaker labels never appear
     /// as owners or pseudo-names in prose.
     case v11 = "c6-v1.1"
+    /// v1 + ONE sentence at the end of the USER ACTION ITEMS paragraph: a
+    /// first-person "I'll…/vou…" statement by the user is a commitment the
+    /// user owns (closes missed in-passing user action items).
+    case v12 = "c6-v1.2"
     /// Meeting-type-aware section plans (notes v2): classify-then-write,
     /// per-type section plans inside detailed_notes, canonical-name and
     /// no-raw-label rules.
@@ -111,19 +115,16 @@ public enum NotesPromptVersion: String, Sendable, CaseIterable {
 }
 
 public enum NotesPromptBuilder {
-    /// The SHIPPED default prompt version, decided by two blind validations
-    /// on the pinned sample (pre-committed gates; a challenger ships as
-    /// default only by passing the fabrication floor without losing a
-    /// criterion): v1-vs-v2 (v1 won on
-    /// faithfulness) and v1-vs-v1.1 (judge
-    /// given the FULL model input — v1.1 FAILED the fabrication floor: its
-    /// canonical-name rule induced owner/mapping over-attribution). v1 stays
-    /// the default; v1.1 and v2 are selectable via `notes.promptVersion`.
-    public static let shippedVersion: NotesPromptVersion = .v1
+    /// The SHIPPED default prompt version: v1.2, measured on the account
+    /// engine (Sonnet 5.5). It is the fallback for every engine that resolves
+    /// through here (account, API, local MLX). Earlier blind validations kept
+    /// v1 over v2 (faithfulness) and over v1.1 (v1.1 failed the fabrication
+    /// floor). v1, v1.1 and v2 stay selectable via `notes.promptVersion`.
+    public static let shippedVersion: NotesPromptVersion = .v12
 
     /// Global settings key (both summarization engines read it at
     /// generateNotes time, live read-through): an exact raw value ("c6-v1",
-    /// "c6-v1.1", "c6-v2") selects that prompt; anything else / unset
+    /// "c6-v1.1", "c6-v1.2", "c6-v2") selects that prompt; anything else / unset
     /// resolves to the shipped default. `NotesProvenance.promptVersion`
     /// records what actually ran.
     public static let versionSettingsKey = "notes.promptVersion"
@@ -146,6 +147,7 @@ public enum NotesPromptBuilder {
         switch version {
         case .v1: systemPromptV1
         case .v11: systemPromptV11
+        case .v12: systemPromptV12
         case .v2: systemPromptV2
         }
     }
@@ -189,6 +191,19 @@ public enum NotesPromptBuilder {
 
         SPEAKER LABELS ARE NOT NAMES (mandatory): raw speaker labels ("S0", "S1", …) NEVER appear in notes prose, in summaries, or as action-item owners. Refer to an unnamed speaker by their resolved name, by a name grounded in the transcript, or by a neutral descriptor in the dominant language (e.g. "the other participant" / "o outro participante"). A label may appear ONLY inside "speaker_name_mapping".
         """
+
+    /// v1.2 = the frozen v1 text with ONE sentence appended (single space) to
+    /// the end of its USER ACTION ITEMS paragraph. Built by an exact anchor
+    /// replacement on v1 (never retyped); the precondition traps if the anchor
+    /// ever stops matching exactly once.
+    static let systemPromptV12: String = {
+        let end = "the dedicated section is a view of the full list, not a partition of it."
+        let anchor = end + "\n"
+        let sentence = "A first-person statement by the user about something they will do after the meeting — \"I'll…\", \"I'm going to…\", \"let me…\", \"vou…\", \"eu vou…\", \"deixa que eu…\" — is a commitment the user owns even when said in passing or mid-story: it belongs in both lists, unless the user withdraws it or hands it to someone else later in the meeting."
+        precondition(systemPromptV1.components(separatedBy: anchor).count == 2)
+        return systemPromptV1.replacingOccurrences(
+            of: anchor, with: end + " " + sentence + "\n")
+    }()
 
     /// Frozen v2 system prompt (notes v2):
     /// v1's rules unchanged, PLUS meeting-type classification (classify
