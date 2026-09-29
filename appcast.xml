@@ -3,6 +3,37 @@
     <channel>
         <title>Blaise</title>
         <item>
+            <title>1.9.1</title>
+            <pubDate>Mon, 28 Sep 2026 22:25:12 -0300</pubDate>
+            <link>https://github.com/ricardojustus/blaise/releases/tag/v1.9.1</link>
+            <sparkle:version>388</sparkle:version>
+            <sparkle:shortVersionString>1.9.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.6.1</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Blaise 1.9.1: notes on Sonnet 5.5
+
+The Claude subscription engine now writes your notes and memory digest with Sonnet 5.5.
+
+## What changed
+
+- **Sonnet 5.5 for the subscription engine.** In side-by-side tests on real meetings, 5.5 wrote more accurate notes
+  and digests than 4.6 (fewer wrong names, dates and superseded decisions kept as if still decided) and finished in
+  about half the time. The API engine stays on Sonnet 4.6.
+- **Room for long meetings.** The engine's output limit goes up to 32,000 tokens, so the digest of a two-hour meeting
+  is no longer cut short.
+- **Your own commitments land in your action items.** A new notes prompt version, c6-v1.2, treats anything you say
+  you will do yourself ("I'll…", "vou…") as your action item, even when you say it in passing. It is the new default
+  for every engine; the earlier versions stay selectable.
+- **Upgrading from 1.9.0:** delivered in place by the updater. Meetings, transcripts, notes and settings untouched.
+
+## Assets
+
+- `Blaise-1.9.1.zip`: the notarised, stapled app (macOS 15.6.1+, Apple Silicon)
+- `blaise-meet-extension.zip`: the Chrome extension for Google Meet participant/speaker signals (unchanged)
+]]></description>
+            <enclosure url="https://github.com/ricardojustus/blaise/releases/download/v1.9.1/Blaise-1.9.1.zip" length="32638391" type="application/octet-stream" sparkle:edSignature="NN3G15Ey4v6MCLe/kNXAgQP7uRxps93e8eQgo+SUVReJls+2Ylh41K1mW1Ls0A6vZTplYCpr/08w5GJ4tQ48Dg=="/>
+        </item>
+        <item>
             <title>1.9.0</title>
             <pubDate>Sun, 27 Sep 2026 23:56:45 -0300</pubDate>
             <link>https://github.com/ricardojustus/blaise/releases/tag/v1.9.0</link>
