@@ -1439,6 +1439,11 @@ public actor ProcessingPipeline {
                 status = .resolved
             } else if row.kind == .understanding {
                 status = .pending
+            } else if let structuredNotes, CorrectionAnchoring.isPassage(row.quotedText) {
+                status = CorrectionAnchoring.resolvePassage(
+                    quote: row.quotedText, occurrence: row.occurrence, section: row.section,
+                    in: CorrectionAnchoring.RenderedSpace(structuredNotes)) == nil
+                    ? .stale : .applied
             } else if let structuredNotes {
                 let blocks = CorrectionAnchoring.blocks(
                     of: structuredNotes, section: row.section)
@@ -1645,13 +1650,26 @@ public actor ProcessingPipeline {
             $0.status == .pending
         }) else { return .completed }
         let slice = Array(understandingRows[oldestPendingIndex...])
+        // A passage's label names the sections of its own instance in the
+        // notes this request carries; one-piece rows, and passages that no
+        // longer resolve, name the row's section.
+        let space = slice.contains { CorrectionAnchoring.isPassage($0.quotedText) }
+            ? CorrectionAnchoring.RenderedSpace(storedNotes.structured) : nil
         let request = NotesEditorRequest(
             meetingID: meetingID,
             currentNotes: storedNotes.structured,
-            instructions: slice.map {
-                NotesEditorInstruction(
-                    rowID: $0.id, section: $0.section, quotedText: $0.quotedText,
-                    userText: $0.userText)
+            instructions: slice.map { row in
+                var sections = [row.section]
+                if let space, CorrectionAnchoring.isPassage(row.quotedText),
+                    let resolved = CorrectionAnchoring.resolvePassage(
+                        quote: row.quotedText, occurrence: row.occurrence,
+                        section: row.section, in: space)
+                {
+                    sections = resolved.instance.sections(in: space)
+                }
+                return NotesEditorInstruction(
+                    rowID: row.id, section: row.section, sections: sections,
+                    quotedText: row.quotedText, userText: row.userText)
             })
         let completionSnapshots = Dictionary(uniqueKeysWithValues: slice.enumerated().compactMap {
             offset, row -> (Int, NotesEditorCompletionSnapshot)? in
@@ -4828,6 +4846,8 @@ public actor ProcessingPipeline {
             let withdrawn = CorrectionAnchoring.withdrawnClaims(
                 corrections: corrections,
                 currentHaystack: CorrectionAnchoring.foldedHaystack(
+                    of: stored.structured, meetingTitle: meeting.title),
+                renderedHaystack: CorrectionAnchoring.renderedHaystack(
                     of: stored.structured, meetingTitle: meeting.title))
             guard !withdrawn.isEmpty else { return false }
             // The screened value is the one stage 12 PERSISTS: G13
@@ -4839,15 +4859,17 @@ public actor ProcessingPipeline {
             // sits after the token check: a cancel landing on the derivation's
             // reads is absorbed as pre-verdict instead of passing a stale
             // "not cancelled" reading into the verdict.
+            let neutralized = try await neutralizedForInstall(
+                meetingID: meetingID, candidate: candidate,
+                dominantLanguage: dominantLanguage)
             let candidateHaystack = CorrectionAnchoring.foldedHaystack(
-                of: try await neutralizedForInstall(
-                    meetingID: meetingID, candidate: candidate,
-                    dominantLanguage: dominantLanguage),
-                meetingTitle: meeting.title)
+                of: neutralized, meetingTitle: meeting.title)
             guard context.record.regeneration,
                 context.cancelToken?.isCancelled != true,
                 CorrectionAnchoring.resurrectedClaim(
-                    withdrawn: withdrawn, candidateHaystack: candidateHaystack) != nil
+                    withdrawn: withdrawn, candidateHaystack: candidateHaystack,
+                    candidateRenderedHaystack: CorrectionAnchoring.renderedHaystack(
+                        of: neutralized, meetingTitle: meeting.title)) != nil
             else { return false }
             keptMarkdown = stored.markdown
         } catch is CancellationError {

@@ -771,7 +771,7 @@ public enum DigestPromptBuilder {
     static func correctionsBlock(_ instructions: [NotesEditorInstruction]) -> String? {
         guard !instructions.isEmpty else { return nil }
         let lines = instructions.enumerated().map { index, instruction in
-            "\(index + 1). The notes said: \"\(CorrectionSanitize.promptField(instruction.quotedText))\". The user corrects: \(CorrectionSanitize.promptField(instruction.userText))"
+            "\(index + 1). The notes said: \(CorrectionSanitize.promptQuote(instruction.quotedText)). The user corrects: \(CorrectionSanitize.promptField(instruction.userText))"
         }
         return "AUTHORITATIVE USER CORRECTIONS — the user has corrected this meeting's record. These override the transcript where they conflict. Apply each wherever it genuinely reaches; never restate a claim a correction withdraws. They are listed oldest first: where two corrections conflict about the same fact, the HIGHER-NUMBERED one is what the user believes now.\n"
             + lines.joined(separator: "\n")

@@ -244,7 +244,8 @@ public enum EvidencePayloadBuilder {
         }
         // The retraction set: one record per understanding row whose quoted
         // claim is currently ABSENT from the notes this payload carries, by the
-        // shipped withdrawn-claim predicate. Derived fresh at every mint, so a
+        // shipped withdrawn-claim predicate (a passage: the pieces absent from
+        // the rendered notes, joined by "\n"). Derived fresh at every mint, so a
         // claim whose words returned (or whose row the user deleted) simply is
         // not in the next set. Unlike the additive fields above this one is
         // ALWAYS emitted under `.current`, `[]` included: the consumer replaces
@@ -256,14 +257,16 @@ public enum EvidencePayloadBuilder {
             let haystack = CorrectionAnchoring.foldedHaystack(
                 of: structured, meetingTitle: meeting.title)
             let records = CorrectionAnchoring.withdrawnRows(
-                corrections: corrections, currentHaystack: haystack)
-                .sorted { $0.id < $1.id }
-                .map { row -> CanonicalJSONValue in
+                corrections: corrections, currentHaystack: haystack,
+                renderedHaystack: CorrectionAnchoring.renderedHaystack(
+                    of: structured, meetingTitle: meeting.title))
+                .sorted { $0.row.id < $1.row.id }
+                .map { withdrawn -> CanonicalJSONValue in
                     .object([
-                        ("id", .string(row.id)),
+                        ("id", .string(withdrawn.row.id)),
                         ("kind", .string("removal")),
-                        ("claim_text", .string(row.quotedText)),
-                        ("retracted_at_ms", .integer(milliseconds(date: row.createdAt))),
+                        ("claim_text", .string(withdrawn.claimText)),
+                        ("retracted_at_ms", .integer(milliseconds(date: withdrawn.row.createdAt))),
                     ])
                 }
             topLevel.append(("retractions", .array(records)))

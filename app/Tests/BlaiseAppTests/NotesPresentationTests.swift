@@ -69,6 +69,39 @@ import Testing
         #expect(matched.first?.inlinePresentationIntent?.contains(.stronglyEmphasized) == true)
     }
 
+    /// The notes prose is drawn by the pane's document builder, not by
+    /// `SearchHighlight` (which still draws table cells): the same defect,
+    /// pinned where the prose is highlighted now.
+    @Test func proseSearchHighlightPreservesBoldAndLinks() throws {
+        let doc = NotesDocumentBuilder.build(
+            NotesDocInput(
+                structured: NotesStructured(
+                    summary: "O **warp core** foi entregue, detalhes em https://quollharbor.example/sonar hoje.",
+                    detailedNotes: "", decisions: [], actionItems: [], userActionItems: []),
+                doneKeys: [], searchTerms: ["entregue"], portuguese: false,
+                userActionTitle: "Demo User — Action Items", direction: .aquarela))
+        let text = doc.text
+        let string = text.string as NSString
+        func bold(_ range: NSRange) -> Bool {
+            (text.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont)?
+                .fontDescriptor.symbolicTraits.contains(.bold) == true
+        }
+        // The source formatting survives.
+        #expect(bold(string.range(of: "warp core")))
+        #expect(!bold(string.range(of: "detalhes")))
+        let link = string.range(of: "https://quollharbor.example/sonar")
+        #expect(
+            text.attribute(.link, at: link.location, effectiveRange: nil) as? URL
+                == URL(string: "https://quollharbor.example/sonar"))
+        // And the match is highlighted (accent + underline + emphasis).
+        let match = string.range(of: "entregue")
+        #expect(text.attribute(.underlineStyle, at: match.location, effectiveRange: nil) as? Int
+            == NSUnderlineStyle.single.rawValue)
+        #expect(text.attribute(.backgroundColor, at: match.location, effectiveRange: nil) != nil)
+        #expect(bold(match))
+        #expect(text.attribute(.underlineStyle, at: string.range(of: "foi").location, effectiveRange: nil) == nil)
+    }
+
     /// A match INSIDE a bold run keeps the surrounding text's formatting and
     /// the whole source text intact.
     @Test func searchHighlightKeepsTextAndNestedEmphasisIntact() {

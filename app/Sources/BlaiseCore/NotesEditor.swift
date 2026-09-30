@@ -20,8 +20,24 @@ public struct NotesItemPatch: Sendable, Equatable, Decodable {
 public struct NotesEditorInstruction: Sendable, Equatable {
     public var rowID: String          // host-only; never sent as authority
     public var section: MeetingCorrection.Section
+    /// The sections the line's label names: for a passage, the distinct
+    /// sections of its pieces in the row's own instance; `[section]` for a
+    /// one-piece row or a passage that does not resolve.
+    public var sections: [MeetingCorrection.Section]
     public var quotedText: String
     public var userText: String
+
+    public init(
+        rowID: String, section: MeetingCorrection.Section,
+        sections: [MeetingCorrection.Section]? = nil,
+        quotedText: String, userText: String
+    ) {
+        self.rowID = rowID
+        self.section = section
+        self.sections = sections ?? [section]
+        self.quotedText = quotedText
+        self.userText = userText
+    }
 }
 
 public struct NotesEditorRequest: Sendable, Equatable {
@@ -194,7 +210,7 @@ valid when nothing genuinely changes.
     /// chronological order.
     static func userMessage(for request: DigestEditorRequest) -> String {
         let lines = request.instructions.enumerated().map { index, instruction in
-            "\(index + 1). The user corrected the meeting record. The notes said: \"\(CorrectionSanitize.promptField(instruction.quotedText))\". The user corrects: \(CorrectionSanitize.promptField(instruction.userText))"
+            "\(index + 1). The user corrected the meeting record. The notes said: \(CorrectionSanitize.promptQuote(instruction.quotedText)). The user corrects: \(CorrectionSanitize.promptField(instruction.userText))"
         }
         return "CURRENT DIGEST:\n\(request.currentDigest)\nCORRECTIONS:\n"
             + lines.joined(separator: "\n")
@@ -298,7 +314,7 @@ of: title, summary, detailed_notes, decisions, action_items, user_action_items.
         let notesJSON = String(
             decoding: try encoder.encode(request.currentNotes), as: UTF8.self)
         let instructionLines = request.instructions.enumerated().map { index, instruction in
-            "\(index + 1). In the \(sectionLabel(instruction.section)), the current notes say: \"\(CorrectionSanitize.promptField(instruction.quotedText))\". The user corrects: \(CorrectionSanitize.promptField(instruction.userText))"
+            "\(index + 1). In the \(sectionLabels(instruction.sections)), the current notes say: \(CorrectionSanitize.promptQuote(instruction.quotedText)). The user corrects: \(CorrectionSanitize.promptField(instruction.userText))"
         }
         return "CURRENT NOTES:\n\(notesJSON)\nINSTRUCTIONS:\n"
             + instructionLines.joined(separator: "\n")
@@ -306,6 +322,15 @@ of: title, summary, detailed_notes, decisions, action_items, user_action_items.
 
     static func decodeOperations(from data: Data) throws -> [NotesEditOperation] {
         try JSONDecoder().decode(NotesEditorResponseEnvelope.self, from: data).operations
+    }
+
+    /// `A`, `A and the B`, `A, the B and the C` — the template supplies the
+    /// first "the". One section is today's label alone.
+    private static func sectionLabels(_ sections: [MeetingCorrection.Section]) -> String {
+        let labels = sections.map(sectionLabel)
+        guard let last = labels.last, labels.count > 1 else { return labels.first ?? "" }
+        let head = [labels[0]] + labels.dropFirst().dropLast().map { "the " + $0 }
+        return head.joined(separator: ", ") + " and the " + last
     }
 
     private static func sectionLabel(_ section: MeetingCorrection.Section) -> String {

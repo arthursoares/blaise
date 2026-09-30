@@ -40,16 +40,6 @@ private func meetingDetailSource() throws -> String {
         encoding: .utf8)
 }
 
-/// The block host's own source, read for the same reason.
-private func notesBlockTextSource() throws -> String {
-    let sources = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().deletingLastPathComponent()
-        .deletingLastPathComponent().appendingPathComponent("Sources", isDirectory: true)
-    return try String(
-        contentsOf: sources.appendingPathComponent("BlaiseApp/NotesBlockText.swift"),
-        encoding: .utf8)
-}
-
 /// One declaration's body, bounded by the declaration that follows it.
 private func declaration(
     _ name: String, endingBefore next: String, in source: String
@@ -60,6 +50,8 @@ private func declaration(
     guard
         let end = source.range(
             of: "private var \(next)", options: [], range: start.upperBound..<source.endIndex)
+            ?? source.range(
+                of: "private func \(next)", options: [], range: start.upperBound..<source.endIndex)
     else { throw MissingDeclaration(name: next) }
     return source[start.upperBound..<end.lowerBound]
 }
@@ -87,15 +79,21 @@ private func declaration(
             decisions: [], actionItems: [], userActionItems: [])
     }
 
+    @MainActor
     @Test("a repeated paragraph anchors to the block the user acted on, not the first one")
-    func repeatedParagraphAnchorsToItsOwnBlock() {
+    func repeatedParagraphAnchorsToItsOwnBlock() throws {
         let rendered = MarkdownBlocks.parse(detailed).map { String($0.text.characters) }
         let anchorBlocks = CorrectionAnchoring.blocks(of: structured, section: .detailedNotes)
         // The user acts on the SECOND "Owner to be confirmed." (rendered block 3).
         let index = 3
         #expect(rendered[index] == "Owner to be confirmed.")
 
-        let carried = CorrectionAnchoring.occurrence(ofBlockAt: index, in: rendered)
+        // The occurrence the pane's document carries on that block.
+        let doc = NotesDocumentBuilder.build(
+            NotesDocInput(
+                structured: structured, doneKeys: [], searchTerms: [], portuguese: false,
+                userActionTitle: "Demo User — Action Items", direction: .aquarela))
+        let carried = try #require(doc.block(NotesBlockAnchor.detailed(index))).occurrence
         #expect(carried == 1, "it is the second block matching its own text")
 
         // Whole-block invocation: the quote equals the block, so the carried
@@ -452,9 +450,8 @@ private func declaration(
     @Test("the ✕ the callout draws is the control that runs the retire path")
     func calloutDismissIsWiredToRetire() throws {
         let source = try meetingDetailSource()
-        let declared = try declaration("editingCallout", endingBefore: "selectionBar", in: source)
         // The declaration's own body ends where the next member begins.
-        let body = declared[..<(try #require(declared.range(of: "@ViewBuilder")).lowerBound)]
+        let body = try declaration("editingCallout", endingBefore: "contextMenuInvoke", in: source)
         #expect(body.contains("NotesEditingCallout.text"))
 
         // Exactly one control, either spelling, so the ✕ cannot be the inert
@@ -483,34 +480,30 @@ private func declaration(
             "the glyph belongs to that button's label, not to its action")
     }
 
-    /// Where the pane draws the callout, read from its source: inside the
-    /// summary section's own `ForEach`, keyed on the resolved anchor — so the
-    /// banner is attached to the block the resolver named, not to a fixed
-    /// position and not to the document above the sections.
-    @Test("the summary section renders the callout at the resolved anchor, inside its ForEach")
+    /// Where the pane draws the callout, read from its source: in the stack
+    /// placed under the summary block the resolver named — so the banner is
+    /// attached to that block, not to a fixed position and not to the document
+    /// above the sections.
+    @Test("the callout is placed under the summary block the resolver names")
     func calloutIsRenderedAtItsAnchor() throws {
         let source = try meetingDetailSource()
-        let sections = try #require(source.range(of: "private func structuredSections("))
-        let nextMember = try #require(
-            source.range(
-                of: "private func editableBlock<", range: sections.upperBound..<source.endIndex))
-        let body = source[sections.upperBound..<nextMember.lowerBound]
-
-        // The summary's own loop: from its ForEach to the section that follows.
-        let loop = try #require(body.range(of: "ForEach(Array(summaryBlocks.enumerated())"))
-        let afterLoop = try #require(
-            body.range(of: "let userActionItems", range: loop.upperBound..<body.endIndex))
-        let summaryLoop = body[loop.upperBound..<afterLoop.lowerBound]
+        let start = try #require(source.range(of: "private func docAttachments("))
+        let next = try #require(
+            source.range(of: "private func docTail(", range: start.upperBound..<source.endIndex))
+        let body = source[start.upperBound..<next.lowerBound]
 
         #expect(
-            summaryLoop.contains("if index == calloutAnchor { editingCallout }"),
-            "the banner is drawn in the summary loop, keyed on the resolved anchor")
+            body.contains("let callout = NotesEditingCallout.anchorIndex("),
+            "the anchor IS the resolver's answer, not a literal")
         #expect(
-            !summaryLoop.contains("ForEach("),
-            "the banner is drawn in the block loop itself, not in a second loop")
+            body.contains(".map { NotesBlockAnchor.summary(summaryBlocks[$0].id) }"),
+            "…named as that summary block's own anchor")
+        #expect(body.contains("if let callout { anchors.insert(callout) }"), "that block gets a stack")
+        // Drawn inside the one stack built per anchor, keyed on the resolved anchor.
+        let stack = try #require(body.range(of: "let stack = VStack("))
         #expect(
-            body.contains("let calloutAnchor = NotesEditingCallout.anchorIndex("),
-            "and the anchor the loop reads IS the resolver's answer, not a literal")
+            body[stack.upperBound...].contains("if anchor == callout { editingCallout }"),
+            "the banner is drawn in the block's own stack, keyed on the resolved anchor")
     }
 
     /// The host swap must not cost the search highlighting: asserted on what the
@@ -537,94 +530,6 @@ private func declaration(
         #expect(rendered.runs.contains { $0.link != nil })
     }
 
-    /// §3.3: a whole-block invocation washes the block, a selection washes the
-    /// exact span. The span wash rides the text the host renders, so it can
-    /// cover a range instead of the row.
-    @Test("a selection-scoped composer washes exactly its span, and nothing else")
-    func selectionWashesTheSpanOnly() {
-        let source = MarkdownBlocks.parse(
-            "The cohort review ran long and the sonar demo slipped a week.")[0].text
-        let span = "the sonar demo slipped"
-        let rendered = NotesBlockText.displayText(source: source, terms: [], washedSpan: SelectedSpan(text: span))
-
-        #expect(String(rendered.characters) == String(source.characters))
-        let washed = rendered.runs.filter { $0.backgroundColor != nil }
-        #expect(washed.map { String(rendered[$0.range].characters) }.joined() == span)
-
-        // A whole-block invocation passes no span: the block's own wash paints
-        // it, and the text carries none.
-        let plain = NotesBlockText.displayText(source: source, terms: [])
-        #expect(plain.runs.allSatisfy { $0.backgroundColor == nil })
-    }
-
-    /// A block can repeat the same words. The wash is the cue that says which
-    /// passage the instruction is about, so it has to land on the range the
-    /// user dragged over — a first-match lookup paints the wrong one.
-    @Test("selecting the second of two identical phrases washes the second")
-    func spanWashFollowsTheSelectedOccurrence() {
-        let source = MarkdownBlocks.parse(
-            "Ship the sonar demo; confirm the sonar demo after the review.")[0].text
-        let plain = String(source.characters)
-        let phrase = "the sonar demo"
-        // Where the SECOND one starts, and what the host reports for a drag
-        // that begins there.
-        let secondStart = plain.range(
-            of: phrase, range: plain.range(of: "; ")!.upperBound..<plain.endIndex)!
-        let offset = plain.distance(from: plain.startIndex, to: secondStart.lowerBound)
-        let span = SelectedSpan(
-            text: phrase, occurrence: spanOccurrence(of: phrase, startingAt: offset, in: plain))
-        #expect(span.occurrence == 1)
-
-        let rendered = NotesBlockText.displayText(source: source, terms: [], washedSpan: span)
-        #expect(String(rendered.characters) == plain)
-        let washed = rendered.runs.filter { $0.backgroundColor != nil }
-        #expect(washed.map { String(rendered[$0.range].characters) }.joined() == phrase)
-        #expect(
-            rendered.characters.distance(
-                from: rendered.startIndex, to: washed[0].range.lowerBound) == offset,
-            "the second occurrence, not the first")
-
-        // What a first-match lookup does with the same selection: the wrong
-        // phrase, with nothing on screen to say so.
-        let firstMatch = NotesBlockText.displayText(
-            source: source, terms: [], washedSpan: SelectedSpan(text: phrase))
-        let painted = firstMatch.runs.filter { $0.backgroundColor != nil }
-        #expect(
-            firstMatch.characters.distance(
-                from: firstMatch.startIndex, to: painted[0].range.lowerBound) < offset)
-    }
-
-    @Test("an occurrence the rewritten block no longer has falls back to its last")
-    func spanWashClampsToTheLastOccurrence() {
-        let source = MarkdownBlocks.parse("Ship the sonar demo after the review.")[0].text
-        let rendered = NotesBlockText.displayText(
-            source: source, terms: [],
-            washedSpan: SelectedSpan(text: "the sonar demo", occurrence: 3))
-        let washed = rendered.runs.filter { $0.backgroundColor != nil }
-        #expect(washed.map { String(rendered[$0.range].characters) }.joined() == "the sonar demo")
-    }
-
-    @Test("a span the block no longer contains washes nothing rather than guessing")
-    func staleSpanWashesNothing() {
-        let source = MarkdownBlocks.parse("The review overran its slot.")[0].text
-        let rendered = NotesBlockText.displayText(
-            source: source, terms: [], washedSpan: SelectedSpan(text: "the sonar demo slipped"))
-        #expect(rendered.runs.allSatisfy { $0.backgroundColor == nil })
-    }
-
-    @Test("the span wash and the search highlight coexist on the same block")
-    func spanWashKeepsTheSearchHighlight() {
-        let source = MarkdownBlocks.parse(
-            "O **warp core** foi entregue, detalhes em https://quollharbor.example/sonar hoje.")[0]
-            .text
-        let rendered = NotesBlockText.displayText(
-            source: source, terms: ["entregue"], washedSpan: SelectedSpan(text: "foi entregue"))
-        let matched = rendered.runs.filter { $0.underlineStyle == .single }
-        #expect(matched.map { String(rendered[$0.range].characters) } == ["entregue"])
-        let washed = rendered.runs.filter { $0.backgroundColor != nil }
-        #expect(washed.map { String(rendered[$0.range].characters) }.joined() == "foi entregue")
-    }
-
     @Test("the block's search accessibility hint survives the host swap")
     func accessibilityHintSurvives() {
         let source = MarkdownBlocks.parse("A revisão já está pronta.")[0].text
@@ -632,27 +537,6 @@ private func declaration(
             NotesBlockText.searchHint(source: source, terms: ["revisão"])
                 == "Contains the current search match")
         #expect(NotesBlockText.searchHint(source: source, terms: ["berthing"]).isEmpty)
-    }
-
-    @Test("an annotated passage says how many margin notes it carries")
-    func annotatedPassageStatesItsNoteCount() {
-        #expect(NotesBlockText.annotationHint(0).isEmpty)
-        #expect(NotesBlockText.annotationHint(1) == "Has 1 margin note")
-        #expect(NotesBlockText.annotationHint(3) == "Has 3 margin notes")
-    }
-
-    @Test("the passage's hint carries the note count beside the search state")
-    func hintCarriesCountAndSearchState() {
-        let source = MarkdownBlocks.parse("A revisão já está pronta.")[0].text
-        #expect(NotesBlockText.hint(source: source, terms: [], annotations: 0).isEmpty)
-        #expect(
-            NotesBlockText.hint(source: source, terms: [], annotations: 2) == "Has 2 margin notes")
-        #expect(
-            NotesBlockText.hint(source: source, terms: ["revisão"], annotations: 1)
-                == "Has 1 margin note. Contains the current search match")
-        #expect(
-            NotesBlockText.hint(source: source, terms: ["revisão"], annotations: 0)
-                == "Contains the current search match")
     }
 }
 
@@ -879,38 +763,13 @@ private struct TestRemintFailure: Error, CustomStringConvertible {
         #expect(!composerBelongs(nil, toBlockWith: "notes-detailed-2"))
     }
 
-    /// Block ids are positional, and a full re-synthesis can return FEWER
-    /// blocks than the one the composer opened on. §3.2 promises the draft is
-    /// retained across that run, so the composer cannot depend on its block
-    /// still being there: it presents off its retained quote instead.
-    @Test("a rewrite that removes the composing block leaves the composer standing")
+    /// §3.2 promises the draft is retained across a run that rewrites the
+    /// notes; the composer presents off its retained quote.
+    @Test("a composer keeps its quote while a run holds the meeting, and commits once the gate reopens")
     func composerSurvivesItsBlockLeavingTheNotes() {
-        var notes = NotesStructured(
-            summary: "The cohort review went well.",
-            detailedNotes: """
-                Alpha shipped on time.
-
-                The sonar demo slipped a week.
-
-                Beta slipped a week.
-                """,
-            decisions: [], actionItems: [], userActionItems: [])
-        // Opened on the LAST detailed block.
         let opened = NotesEditingEntry.target(
             .correct, section: .detailedNotes, anchorID: NotesBlockAnchor.detailed(2),
             blockText: "Beta slipped a week.", occurrence: 0)
-        #expect(!composerIsOrphaned(opened, renderedAnchorIDs: NotesBlockAnchor.rendered(in: notes)))
-
-        // The run merges two paragraphs into one: the id it opened on is gone.
-        notes.detailedNotes = """
-            Alpha shipped on time.
-
-            The sonar demo and Beta both slipped a week.
-            """
-        let rebuilt = NotesBlockAnchor.rendered(in: notes)
-        #expect(!rebuilt.contains(NotesBlockAnchor.detailed(2)))
-        #expect(composerIsOrphaned(opened, renderedAnchorIDs: rebuilt))
-
         // What stays with it: the quote it names, the reason its commit is
         // closed while the run holds the meeting, and the commit itself once
         // the gate reopens.
@@ -926,20 +785,7 @@ private struct TestRemintFailure: Error, CustomStringConvertible {
         #expect(committed == [opened])
     }
 
-    @Test("a rewrite that only rephrases the block keeps the composer under it")
-    func composerStaysWhereItsBlockSurvives() {
-        var notes = NotesStructured(
-            summary: "The cohort review went well.",
-            detailedNotes: "Alpha shipped on time.\n\nThe sonar demo slipped a week.",
-            decisions: [], actionItems: [], userActionItems: [])
-        let opened = NotesEditingEntry.target(
-            .correct, section: .detailedNotes, anchorID: NotesBlockAnchor.detailed(1),
-            blockText: "The sonar demo slipped a week.", occurrence: 0)
-        notes.detailedNotes = "Alpha shipped on time.\n\nThe sonar demo slipped by a week."
-        #expect(!composerIsOrphaned(opened, renderedAnchorIDs: NotesBlockAnchor.rendered(in: notes)))
-        #expect(!composerIsOrphaned(nil, renderedAnchorIDs: []))
-    }
-
+    @MainActor
     @Test("every block the pane renders has an id, and no two sections share one")
     func renderedAnchorIDsCoverEverySection() {
         let notes = NotesStructured(
@@ -951,7 +797,12 @@ private struct TestRemintFailure: Error, CustomStringConvertible {
                 ActionItem(owner: "Platform", text: "   "),
             ],
             userActionItems: [])
-        let ids = NotesBlockAnchor.rendered(in: notes)
+        // The ids of the blocks the pane's document lays out.
+        let ids = NotesDocumentBuilder.build(
+            NotesDocInput(
+                structured: notes, doneKeys: [], searchTerms: [], portuguese: false,
+                userActionTitle: "Demo User — Action Items", direction: .aquarela)
+        ).blocks.map(\.anchorID).filter { !NotesDocument.isEdge($0) }
 
         #expect(Set(ids).count == ids.count, "section prefixes keep the ids distinct")
         #expect(ids.contains(NotesBlockAnchor.summary(1)))
@@ -1303,14 +1154,15 @@ private struct FakeSummarizerWithoutEditor: SummarizationEngine {
         let detail = try String(
             contentsOf: sources.appendingPathComponent("BlaiseApp/MeetingDetailView.swift"),
             encoding: .utf8)
-        // Every composer the pane presents — the orphaned one first in the file,
-        // then the in-block one — is drawn only while its own action is still
-        // offered: the orphan asks the term directly, the in-block one through
-        // the shared presented-composer value its block's marks also read.
+        // Every composer the pane presents — the in-block one placed under its
+        // block first in the file, then the orphaned one in the tail — is drawn
+        // only while its own action is still offered: the in-block one through
+        // the shared presented-composer value its block's marks also read, the
+        // orphan by asking the term directly.
         let sites = detail.components(separatedBy: "InlineComposer(")
         #expect(sites.count - 1 == 2, "both composer presentations are covered here")
-        #expect(sites[0].suffix(400).contains("NotesEditingEntry.offered("))
-        #expect(sites[1].suffix(300).contains("if composing, let target = editingTarget {"))
+        #expect(sites[0].suffix(300).contains("if composing, let target = editingTarget {"))
+        #expect(sites[1].suffix(500).contains("NotesEditingEntry.offered("))
     }
 
     /// The composer's withdrawal has to take its block's marks with it. Three
@@ -1358,14 +1210,18 @@ private struct FakeSummarizerWithoutEditor: SummarizationEngine {
         #expect(composingTail.contains("composerPresented("))
         #expect(composingTail.contains("engineCanEditNotes: engineCanEditNotes"))
         #expect(detail.components(separatedBy: "let composing = ").count - 1 == 1)
-        // And the three marks read it: the wash, the pending-mark suppression,
-        // and the bar that must stand at the block again.
-        #expect(detail.contains("composing && composedSpan == nil ? .composing"))
-        #expect(detail.contains("?? (composing\n                ? nil"))
-        let bar = try #require(detail.range(of: "private var selectionBar"))
-        let barCondition = detail[bar.upperBound...].prefix(400)
-        #expect(barCondition.contains("!composerPresented("))
-        #expect(barCondition.contains("engineCanEditNotes: engineCanEditNotes"))
+        // And the marks read the same term: the composing wash (which takes the
+        // block's pending mark's place) only on a block whose composer is
+        // presented, and the bar stands at the block again once it is not.
+        let composingAnchor = try #require(detail.range(of: "let composingAnchor = editingTarget.flatMap"))
+        let anchorTail = detail[composingAnchor.upperBound...].prefix(200)
+        #expect(anchorTail.contains("composerPresented("))
+        #expect(anchorTail.contains("engineCanEditNotes: engineCanEditNotes"))
+        #expect(detail.contains("docMarks(rows, pieces: docCache.pieces, composingAnchor: composingAnchor)"))
+        let aim = try #require(detail.range(of: "let aim = commandTarget.flatMap"))
+        let aimTail = detail[aim.upperBound...].prefix(200)
+        #expect(aimTail.contains("composerPresented("))
+        #expect(aimTail.contains("engineCanEditNotes: engineCanEditNotes"))
     }
 
     @Test("AC-13: the selection bar and the block menu draw the correct target only when offered")
@@ -1385,14 +1241,22 @@ private struct FakeSummarizerWithoutEditor: SummarizationEngine {
         // The panel's placement asks the same question the header does.
         #expect(editing.contains("if notesEditorSendOffered(rows: rows,"))
 
+        // The block menu is the notes text view's own: its Correct item is
+        // added only when the pane offers it, and the pane's offer IS the seam.
         let detail = try String(
             contentsOf: sources.appendingPathComponent("BlaiseApp/MeetingDetailView.swift"),
             encoding: .utf8)
-        let menuStart = try #require(detail.range(of: ".contextMenu {"))
-        let menuTail = detail[menuStart.upperBound...]
-        let menuEnd = try #require(menuTail.range(of: "Button(\"Add Note…\")"))
+        let offers = try #require(detail.range(of: "menuOffers: {"))
+        #expect(detail[offers.upperBound...].prefix(120).contains("NotesEditingEntry.offered(.correct"))
+        let view = try String(
+            contentsOf: sources.appendingPathComponent("BlaiseApp/NotesDocumentView.swift"),
+            encoding: .utf8)
+        let menuStart = try #require(view.range(of: "func menu(for event: NSEvent, system: () -> NSMenu?) -> NSMenu? {"))
+        let menuTail = view[menuStart.upperBound...]
+        let menuEnd = try #require(menuTail.range(of: "NSMenuItem(title: \"Add Note…\""))
         let correctItem = menuTail[..<menuEnd.lowerBound]
-        #expect(correctItem.contains("NotesEditingEntry.offered(.correct"))
+        #expect(correctItem.contains("if offers.correct {"))
+        #expect(correctItem.contains("item.isEnabled = offers.correctEnabled"))
     }
 }
 
@@ -1498,57 +1362,9 @@ private struct FakeSummarizerWithoutEditor: SummarizationEngine {
 
 // MARK: - The selection-capable host occupies the same space as the plain one
 
-/// A block's height must be a function of the width it is laid out at, resolved
-/// in that same pass. The plain `Text` host is the reference — it wraps
-/// correctly at every width — so the selection-capable host has to agree with
-/// it: a host that reports less than the reference has lines the layout never
-/// allotted space for, and TextKit never draws them.
-///
-/// Measured through a real SwiftUI layout pass (`ImageRenderer` lays the view
-/// out for rendering), which is the pass an ideal height carried over from the
-/// previous one fails in.
+/// The selection fill the notes are painted with.
 @MainActor
 @Suite struct SelectableBlockHeightTests {
-    /// Fictional prose that wraps to different line counts across the four
-    /// widths, including a block short enough never to wrap at any of them.
-    private let corpus = [
-        "Ship it.",
-        "The Quoll Harbor sonar demo slipped a week.",
-        "The warp core review overran its slot because the Quoll Harbor sonar rig "
-            + "needs a staffing decision before the freeze.",
-        "Vexatron Labs will re-run the berthing survey after the code freeze, publish "
-            + "the corrected sonar figures to the crew wiki, and hand the regression "
-            + "list to the harbor team the same afternoon so nothing waits on a single "
-            + "reviewer.",
-    ]
-
-    private func height(_ text: String, selectable: Bool, width: Double) -> Double {
-        let renderer = ImageRenderer(
-            content: NotesBlockText(
-                source: MarkdownBlocks.parse(text)[0].text, terms: [], selectable: selectable)
-                .font(Design.readingFont(14))
-                .lineSpacing(Design.readingLineSpacing)
-                .frame(width: width, alignment: .leading))
-        return Double(renderer.nsImage?.size.height ?? -1)
-    }
-
-    @Test("the selectable host is as tall as the plain host at every reading width")
-    func selectableHostMatchesThePlainHost() {
-        for block in corpus {
-            for width in [439.0, 520.0, 668.0, 740.0] {
-                let plain = height(block, selectable: false, width: width)
-                let selectable = height(block, selectable: true, width: width)
-                #expect(plain > 0, "the reference host measured nothing at width \(width)")
-                #expect(
-                    abs(selectable - plain) <= 1,
-                    """
-                    at width \(width) the selectable host measured \(selectable) and the \
-                    plain host \(plain) — "\(block.prefix(40))…"
-                    """)
-            }
-        }
-    }
-
     /// Semantic colours only resolve inside an appearance; the notes pane is
     /// dark, so that is the one they are read in.
     private func components(_ color: NSColor) -> (r: Double, g: Double, b: Double, a: Double) {
@@ -1605,8 +1421,7 @@ private struct FakeSummarizerWithoutEditor: SummarizationEngine {
 // MARK: - Reaching the controls without a pointer
 
 /// The commands are keyboard commands, so what they aim at may never depend on
-/// a pointer having been somewhere. `notesBlockFocus` is what puts a block into
-/// the pane's aim.
+/// a pointer having been somewhere.
 @MainActor
 @Suite struct NotesEditingKeyboardReachTests {
     @Test("both commands carry a key equivalent")
@@ -1706,16 +1521,6 @@ private struct FakeSummarizerWithoutEditor: SummarizationEngine {
             .correct, section: .summary, anchorID: "notes-summary-0", blockText: block,
             occurrence: 0, selection: SelectedSpan(text: "onboarding"))
         #expect(span.washedSpan == SelectedSpan(text: "onboarding", occurrence: 0))
-    }
-
-    /// The fill has to ride the glyphs of the passage, which means the call
-    /// site needs a span for a row that was stored days ago — its own quote.
-    @Test("a stored annotation hands the host the span its quote occupies")
-    func storedRowsOfferASpan() {
-        let quote = "the stealth-AI fixes"
-        let stored = row(kind: .annotation, status: .applied, quote: quote)
-        #expect(AnchorWash.washedSpan(for: [stored]) == SelectedSpan(text: quote, occurrence: 0))
-        #expect(AnchorWash.washedSpan(for: []) == nil)
     }
 
     @Test("the anchor wash stays in the reference band, well under the text it marks")
@@ -1959,130 +1764,34 @@ private struct FakeSummarizerWithoutEditor: SummarizationEngine {
 /// affordance of any kind. Selection is untouched — it is the whole way in.
 @MainActor
 @Suite struct NotesProseHostTests {
+    /// The notes are one text view (`NotesDocController`): it is the host.
     @Test("the host takes no typing and still selects")
     func hostTakesNoTyping() {
-        let textView = NSTextView(frame: CGRect(x: 0, y: 0, width: 400, height: 40))
-        textView.string = "Patch 1.4 ships Thursday."
-        NotesProseHost.configure(textView)
+        let controller = NotesDocController()
+        let doc = NotesDocumentBuilder.build(
+            NotesDocInput(
+                structured: NotesStructured(
+                    summary: "Patch 1.4 ships Thursday.", detailedNotes: "", decisions: [], actionItems: [],
+                    userActionItems: []),
+                doneKeys: [], searchTerms: [], portuguese: false, userActionTitle: "Demo User — Action Items",
+                direction: .aquarela))
+        controller.textView.textStorage?.setAttributedString(doc.text)
+        let textView = controller.textView
         #expect(!textView.isEditable, "a caret offers editing this version does not have")
         #expect(textView.isSelectable, "selection is the surface's only way in")
         #expect(textView.selectedTextAttributes[.backgroundColor] != nil)
+        let block = try! #require(doc.blocks.first { $0.section == .summary && $0.range.length > 0 })
         #expect(
             textView.attributedString().attribute(
-                .strikethroughStyle, at: 0, effectiveRange: nil) == nil,
+                .strikethroughStyle, at: block.range.location, effectiveRange: nil) == nil,
             "correction lifecycle must not decorate notes prose")
     }
 
-    /// The pane is dark and this host is not: left alone it resolves every fill
-    /// the text system draws itself in the light appearance.
+    /// The pane is dark: left alone the text view resolves every fill the text
+    /// system draws itself in the light appearance.
     @Test("the host is given the pane's own appearance")
     func hostRunsDark() {
-        let textView = NSTextView(frame: CGRect(x: 0, y: 0, width: 400, height: 40))
-        NotesProseHost.configure(textView)
-        #expect(textView.appearance?.name == .darkAqua)
-    }
-
-    /// A block rewritten under the reader — an editor apply, a name correction —
-    /// must reach the screen while the pane stays open. The selection host is a
-    /// `TextEditor`, which owns its text storage from the moment it exists and
-    /// never re-reads its binding, so the ONLY thing that carries new prose into
-    /// it is a new identity keyed on that prose — and that identity has to
-    /// enclose the plate, which is what takes editability, the light appearance
-    /// and the silent selection away from a freshly created text view. Asserted
-    /// on the host's source: the editor cannot be laid out in a test, and what
-    /// it displays is AppKit's, not ours.
-    @Test("the prose re-identifies the editor, and the plate is inside that identity")
-    func selectionHostAdoptsRewrittenProse() throws {
-        let source = try notesBlockTextSource()
-        let host = try #require(source.range(of: "private struct SelectableBlockText: View {"))
-        let end = try #require(
-            source.range(of: "private struct ProseHeight", range: host.upperBound..<source.endIndex))
-        let body = source[host.upperBound..<end.lowerBound]
-
-        // The whole chain, in order, each search starting where the previous
-        // match ended: the editor, the bridge that configures its text view,
-        // the menu overlay, and only then the identity. Bound this way, neither
-        // a bridge moved outside the identity nor an `.id(display)` on some
-        // later sibling can satisfy it.
-        let editor = try #require(body.range(of: "TextEditor(text: .constant(display))"))
-        let bridge = try #require(
-            body.range(
-                of: ".background { BlockTextHostBridge(",
-                range: editor.upperBound..<body.endIndex))
-        let plate = try #require(
-            body.range(
-                of: ".overlay { BlockContextMenuPlate() }",
-                range: bridge.upperBound..<body.endIndex))
-        let identity = try #require(
-            body.range(of: ".id(display)", range: plate.upperBound..<body.endIndex))
-        #expect(
-            body[plate.upperBound..<identity.lowerBound]
-                .allSatisfy { $0.isWhitespace },
-            "the identity is the next modifier on the chain, not a later sibling's")
-        #expect(
-            body[plate.upperBound...].contains(".id(display)"),
-            "without an identity keyed on the prose the editor keeps showing the old block")
-        #expect(
-            !body[editor.upperBound..<plate.lowerBound].contains(".id(display)"),
-            "an identity inside the plate swaps the text view out from under it, editable")
-    }
-
-    /// A fresh text view arrives editable, light and silent, and only the
-    /// plate's claim takes those away — so a plate that is on screen holding no
-    /// claim must keep asking. PINNED HERE: that the retry exists, that it is
-    /// coalesced, and that its two stop conditions are the ones named (a live
-    /// claim, or leaving the window). NOT PROVEN HERE: that the retry actually
-    /// lands the claim — that needs a real window and a real layout pass, which
-    /// is the operator's driven check, not this test.
-    @Test("an attached plate with no live claim keeps asking for its text view")
-    func plateRetriesUntilItHoldsALiveClaim() throws {
-        let source = try notesBlockTextSource()
-        let plate = try #require(source.range(of: "private final class BlockTextHostPlate: NSView {"))
-        let body = source[plate.upperBound...]
-
-        // The claim path ends by scheduling, so a miss is never the last word.
-        let claim = try #require(body.range(of: "func claimTextView() {"))
-        let claimEnd = try #require(
-            body.range(of: "\n    }\n", range: claim.upperBound..<body.endIndex))
-        #expect(
-            body[claim.upperBound..<claimEnd.lowerBound].contains("scheduleClaimRetryIfNeeded()"),
-            "a claim that came back empty has to ask again")
-
-        let retry = try #require(body.range(of: "private func scheduleClaimRetryIfNeeded() {"))
-        let retryEnd = try #require(
-            body.range(of: "\n    }\n", range: retry.upperBound..<body.endIndex))
-        let retryBody = body[retry.upperBound..<retryEnd.lowerBound]
-        #expect(
-            retryBody.contains("guard window != nil, host?.window == nil, !claimRetryQueued"),
-            "attached, holding no LIVE claim, and nothing already queued — all three")
-        #expect(retryBody.contains("DispatchQueue.main.async"))
-        #expect(
-            retryBody.contains("claimTextView()"),
-            "the retry re-runs the claim rather than a copy of it")
-
-        // The guard only coalesces while the flag moves both ways, and each
-        // move has to happen on the right side of the hop: raised before the
-        // work is queued, lowered inside it before the claim runs again.
-        let raised = try #require(
-            retryBody.range(of: "claimRetryQueued = true"),
-            "without the flag raised, a burst of passes queues a retry per pass")
-        let dispatch = try #require(
-            retryBody.range(
-                of: "DispatchQueue.main.async", range: raised.upperBound..<retryBody.endIndex),
-            "raised after the hop is queued, the guard is open for the whole burst")
-
-        // The closure, bounded by its own close, so a later statement in the
-        // function body cannot stand in for one inside the retry.
-        let closureEnd = try #require(
-            retryBody.range(of: "\n        }", range: dispatch.upperBound..<retryBody.endIndex))
-        let closure = retryBody[dispatch.upperBound..<closureEnd.lowerBound]
-        let lowered = try #require(
-            closure.range(of: "claimRetryQueued = false"),
-            "left raised, the plate retries once and then never asks again")
-        #expect(
-            closure.range(of: "claimTextView()", range: lowered.upperBound..<closure.endIndex)
-                != nil,
-            "lowered after the claim, a miss on this turn cannot queue the next one")
+        #expect(NotesDocController().textView.appearance?.name == .darkAqua)
     }
 
     /// The mark is painted from a span, so which of a block's equal passages it
@@ -2184,12 +1893,6 @@ private struct FakeSummarizerWithoutEditor: SummarizationEngine {
 @Suite struct SettleObservationSurfaceTests {
     private func source() throws -> String { try meetingDetailSource() }
 
-    private func line(containing needle: String, in source: String) throws -> String {
-        let match = source.split(separator: "\n", omittingEmptySubsequences: false)
-            .first { $0.contains(needle) }
-        return String(try #require(match))
-    }
-
     @Test("SC-12: attach, detach and the three activity signals are registered")
     func registrationsExist() throws {
         let source = try source()
@@ -2206,14 +1909,23 @@ private struct FakeSummarizerWithoutEditor: SummarizationEngine {
                     .lowerBound ?? source.endIndex)]
         #expect(disappearBody.contains("settleViewDetached(id)"))
 
-        // The three signal classes: scroll geometry, selection change, composer.
+        // The three signal classes: scrolling, selection change, composer.
+        // Scrolling: the notes text view's clip posts its bounds changes, the
+        // controller hands each to the pane, and the pane signals.
+        let view = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Sources/BlaiseApp/NotesDocumentView.swift"),
+            encoding: .utf8)
+        #expect(view.contains("scrollView.contentView.postsBoundsChangedNotifications = true"))
+        let observer = try #require(
+            view.range(of: "selector: #selector(scrolled), name: NSView.boundsDidChangeNotification"))
+        #expect(view[observer.upperBound...].prefix(80).contains("object: scrollView.contentView"))
+        let scrolled = try #require(view.range(of: "@objc private func scrolled() {"))
+        #expect(view[scrolled.upperBound...].prefix(120).contains("spec?.callbacks.onScroll()"))
         #expect(
-            try line(containing: ".onScrollGeometryChange", in: source).contains("CGFloat"),
-            "scrolling is observed through the pane's scroll geometry")
-        let scrollAction = try #require(
-            source.range(of: ".onScrollGeometryChange(for: CGFloat.self)")).upperBound
-        let afterScroll = source[scrollAction...].prefix(400)
-        #expect(afterScroll.contains("noteSettleActivity()"))
+            source.contains("onScroll: { noteSettleActivity() }"),
+            "scrolling the notes is an activity signal")
         #expect(
             source.contains(".onChange(of: selection) { _, _ in noteSettleActivity() }"),
             "a selection change is an activity signal")

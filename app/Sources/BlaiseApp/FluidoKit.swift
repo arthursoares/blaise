@@ -234,39 +234,6 @@ struct FluidoHeaderSettle: ViewModifier {
 
 // MARK: - user-action box celebration (the one big effect — earned, rare)
 
-/// Completing the LAST open user action item of a meeting fires one sparkle
-/// burst over the user-action box — Estúdio-palette particles, ~2 s, never on any
-/// other path. Hand-rolled Canvas particles (Vortex 1.0.4 was dropped: its
-/// asset catalog needs actool, blocked by this machine's unaccepted Xcode
-/// license). The overlay exists only WHILE bursting — zero cost otherwise.
-/// Suppressed under Reduce Motion.
-struct FluidoUserActionCelebration<Content: View>: View {
-    let openCount: Int
-    @ViewBuilder var content: Content
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var burstStart: Date?
-
-    var body: some View {
-        content
-            .overlay {
-                if let burstStart {
-                    FluidoSparkleBurst(start: burstStart)
-                        .padding(-46)  // let particles overflow the box edges
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
-                }
-            }
-            .onChange(of: openCount) { previous, current in
-                guard previous > 0, current == 0, !reduceMotion else { return }
-                burstStart = Date()
-                Task {
-                    try? await Task.sleep(for: .seconds(FluidoSparkleBurst.duration + 0.2))
-                    burstStart = nil  // tear the TimelineView down again
-                }
-            }
-    }
-}
-
 /// One ballistic particle burst: ~70 cyan/violet/white sparks and squares
 /// thrown from the box's upper middle, falling under gravity, fading out.
 /// Pure Canvas + TimelineView; mounted only for `duration` seconds.

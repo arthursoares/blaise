@@ -263,8 +263,12 @@ private func makeRow(
             let numbered = lines.filter { $0.hasPrefix("1. ") || $0.hasPrefix("2. ") }
             #expect(numbered.count == 1, "\(separator.unicodeScalars): one row -> one entry")
             let entry = try #require(numbered.first)
+            // U+2029 is capture's piece joiner: the quote is two pieces, each
+            // delimited on its own.
+            let delimiters = separator == "\u{2029}" ? 4 : 2
             #expect(
-                asciiQuoteScalars(entry) == 2, "\(separator.unicodeScalars): delimiters intact")
+                asciiQuoteScalars(entry) == delimiters,
+                "\(separator.unicodeScalars): delimiters intact")
         }
     }
 
@@ -512,7 +516,7 @@ private func makeRow(
         let bytes = try Data(contentsOf: url)
         let hex = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
         #expect(
-            hex == "b7da964dcafc61e757ba5ca1473526aa0fbaa1bb4628c2856b958c0d70bf7eb3",
+            hex == "3d96bf824a76889158f68d7b8aa7959dabb6197bfdddc25f048ca81a46bb85e9",
             "the payload builder changed — re-pin deliberately, and only for a change whose new payload field is authorized by name")
     }
 

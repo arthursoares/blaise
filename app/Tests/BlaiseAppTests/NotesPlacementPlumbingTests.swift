@@ -179,7 +179,8 @@ private func oraclePlacements(
         ]
         for (section, expectedOccurrences) in expected {
             let list = renderedList(section)
-            let computed = blockOccurrences(in: CorrectionAnchoring.FoldedBlocks(list))
+            // The counter the pane's document stores on every block.
+            let computed = fastOccurrences(in: CorrectionAnchoring.FoldedBlocks(list))
             #expect(computed == expectedOccurrences, "\(section) occurrences")
             #expect(
                 computed == list.indices.map {

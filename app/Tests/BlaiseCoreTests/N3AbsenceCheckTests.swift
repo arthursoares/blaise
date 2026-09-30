@@ -42,6 +42,8 @@ private func understanding(
 private let removedClaim = "o piloto foi adiado para setembro"
 
 @Suite struct N3AbsenceCheckHelperTests {
+    // Every row in this suite is one-piece (no U+2029), so the rendered
+    // haystack the passage group would need is never read.
 
     // MARK: - SC-4: the fold and the containment boundary
 
@@ -115,7 +117,7 @@ private let removedClaim = "o piloto foi adiado para setembro"
         let haystack = CorrectionAnchoring.foldedHaystack(of: stored, meetingTitle: "Reunião")
         #expect(
             CorrectionAnchoring.withdrawnClaims(
-                corrections: [understanding("alfa \u{1F} beta")], currentHaystack: haystack)
+                corrections: [understanding("alfa \u{1F} beta")], currentHaystack: haystack, renderedHaystack: "")
                 .isEmpty,
             "the quote's separator is out-of-band, and its removal leaves no two-space seam")
         // The same strip runs on the haystack side.
@@ -124,7 +126,7 @@ private let removedClaim = "o piloto foi adiado para setembro"
             CorrectionAnchoring.withdrawnClaims(
                 corrections: [understanding("alfa beta")],
                 currentHaystack: CorrectionAnchoring.foldedHaystack(
-                    of: separatorInNotes, meetingTitle: "Reunião")).isEmpty)
+                    of: separatorInNotes, meetingTitle: "Reunião"), renderedHaystack: "").isEmpty)
     }
 
     // MARK: - SC-5: the derivation and the haystack's surfaces
@@ -143,13 +145,13 @@ private let removedClaim = "o piloto foi adiado para setembro"
             "confirmar o orçamento",  // a user-action-item text
         ].map { understanding($0) }
         #expect(
-            CorrectionAnchoring.withdrawnClaims(corrections: present, currentHaystack: haystack)
+            CorrectionAnchoring.withdrawnClaims(corrections: present, currentHaystack: haystack, renderedHaystack: "")
                 .isEmpty)
         // …and one the notes no longer carry does withdraw.
         #expect(
             CorrectionAnchoring.withdrawnClaims(
-                corrections: [understanding(removedClaim)], currentHaystack: haystack)
-                == [removedClaim])
+                corrections: [understanding(removedClaim)], currentHaystack: haystack, renderedHaystack: "")
+                == .init(claims: [removedClaim]))
     }
 
     @Test("SC-5: a PENDING row whose quote an earlier pass erased DOES enter the withdrawn set")
@@ -159,12 +161,12 @@ private let removedClaim = "o piloto foi adiado para setembro"
         #expect(
             CorrectionAnchoring.withdrawnClaims(
                 corrections: [understanding(removedClaim, status: .pending)],
-                currentHaystack: haystack) == [removedClaim])
+                currentHaystack: haystack, renderedHaystack: "") == .init(claims: [removedClaim]))
         // The other status-blind cases, positively.
         #expect(
             CorrectionAnchoring.withdrawnClaims(
                 corrections: [understanding(removedClaim, status: .resolved)],
-                currentHaystack: haystack) == [removedClaim])
+                currentHaystack: haystack, renderedHaystack: "") == .init(claims: [removedClaim]))
     }
 
     @Test("SC-5: an empty-fold quote and an annotation row never enter the set")
@@ -178,7 +180,7 @@ private let removedClaim = "o piloto foi adiado para setembro"
         #expect(
             CorrectionAnchoring.withdrawnClaims(
                 corrections: [understanding("  "), understanding("###"), annotation],
-                currentHaystack: haystack).isEmpty)
+                currentHaystack: haystack, renderedHaystack: "").isEmpty)
     }
 
     @Test("SC-5: a claim surviving only in a SHADOWED meeting title is withdrawn")
@@ -190,7 +192,7 @@ private let removedClaim = "o piloto foi adiado para setembro"
         #expect(
             CorrectionAnchoring.withdrawnClaims(
                 corrections: [understanding("Piloto adiado para setembro")],
-                currentHaystack: haystack) == ["Piloto adiado para setembro"])
+                currentHaystack: haystack, renderedHaystack: "") == .init(claims: ["Piloto adiado para setembro"]))
     }
 
     @Test("SC-5: a claim reappearing only via the candidate's H1 FALLBACK is caught, both empty forms")
@@ -200,8 +202,8 @@ private let removedClaim = "o piloto foi adiado para setembro"
         let stored = CorrectionAnchoring.foldedHaystack(
             of: storedNotes(), meetingTitle: meetingTitle)
         let withdrawn = CorrectionAnchoring.withdrawnClaims(
-            corrections: [understanding(meetingTitle)], currentHaystack: stored)
-        #expect(withdrawn == [meetingTitle])
+            corrections: [understanding(meetingTitle)], currentHaystack: stored, renderedHaystack: "")
+        #expect(withdrawn == .init(claims: [meetingTitle]))
 
         // A blank candidate title falls back to `meetingTitle` — and so does a
         // markdown-only one, because the renderer FLATTENS before testing.
@@ -209,7 +211,7 @@ private let removedClaim = "o piloto foi adiado para setembro"
             let candidate = storedNotes(title: emptyForm)
             #expect(
                 CorrectionAnchoring.resurrectedClaim(
-                    withdrawn: withdrawn,
+                    withdrawn: withdrawn.claims,
                     candidateHaystack: CorrectionAnchoring.foldedHaystack(
                         of: candidate, meetingTitle: meetingTitle)) == meetingTitle,
                 "a \"\(emptyForm)\" structured title renders the meeting title as H1")
@@ -218,7 +220,7 @@ private let removedClaim = "o piloto foi adiado para setembro"
         // claim reaches no installable surface, so nothing withholds.
         #expect(
             CorrectionAnchoring.resurrectedClaim(
-                withdrawn: withdrawn,
+                withdrawn: withdrawn.claims,
                 candidateHaystack: CorrectionAnchoring.foldedHaystack(
                     of: storedNotes(title: "Sincronização"), meetingTitle: meetingTitle)) == nil)
     }
@@ -228,15 +230,15 @@ private let removedClaim = "o piloto foi adiado para setembro"
         let haystack = CorrectionAnchoring.foldedHaystack(
             of: storedNotes(), meetingTitle: "Reunião de agosto")
         let withdrawn = CorrectionAnchoring.withdrawnClaims(
-            corrections: [understanding("Quoll Harbor")], currentHaystack: haystack)
-        #expect(withdrawn == ["Quoll Harbor"])
+            corrections: [understanding("Quoll Harbor")], currentHaystack: haystack, renderedHaystack: "")
+        #expect(withdrawn == .init(claims: ["Quoll Harbor"]))
 
         // Only in an owner chip.
         let owner = storedNotes(
             userActionItems: [ActionItem(owner: "Quoll Harbor", text: "confirmar o orçamento")])
         #expect(
             CorrectionAnchoring.resurrectedClaim(
-                withdrawn: withdrawn,
+                withdrawn: withdrawn.claims,
                 candidateHaystack: CorrectionAnchoring.foldedHaystack(
                     of: owner, meetingTitle: "Reunião de agosto")) == "Quoll Harbor")
 
@@ -246,7 +248,7 @@ private let removedClaim = "o piloto foi adiado para setembro"
         #expect(ProcessingPipeline.promotedLLMTitle(from: longTitle)?.contains("Quoll") == false)
         #expect(
             CorrectionAnchoring.resurrectedClaim(
-                withdrawn: withdrawn,
+                withdrawn: withdrawn.claims,
                 candidateHaystack: CorrectionAnchoring.foldedHaystack(
                     of: storedNotes(title: longTitle), meetingTitle: "Reunião de agosto"))
                 == "Quoll Harbor")
@@ -261,7 +263,7 @@ private let removedClaim = "o piloto foi adiado para setembro"
             of: storedNotes(title: longTitle), meetingTitle: "Reunião de agosto")
         #expect(
             CorrectionAnchoring.withdrawnClaims(
-                corrections: [understanding("Quoll Harbor")], currentHaystack: haystack).isEmpty)
+                corrections: [understanding("Quoll Harbor")], currentHaystack: haystack, renderedHaystack: "").isEmpty)
     }
 
     @Test("SC-5: the block joiner stops junction matches — and true split resurrections alike")
@@ -269,15 +271,15 @@ private let removedClaim = "o piloto foi adiado para setembro"
         let haystack = CorrectionAnchoring.foldedHaystack(
             of: storedNotes(), meetingTitle: "Reunião de agosto")
         let withdrawn = CorrectionAnchoring.withdrawnClaims(
-            corrections: [understanding(removedClaim)], currentHaystack: haystack)
-        #expect(withdrawn == [removedClaim])
+            corrections: [understanding(removedClaim)], currentHaystack: haystack, renderedHaystack: "")
+        #expect(withdrawn == .init(claims: [removedClaim]))
 
         // The property: two adjacent blocks whose junction happens to spell the
         // claim do not match across the boundary.
         let junction = storedNotes(decisions: ["Sobre o piloto", "foi adiado para setembro"])
         #expect(
             CorrectionAnchoring.resurrectedClaim(
-                withdrawn: withdrawn,
+                withdrawn: withdrawn.claims,
                 candidateHaystack: CorrectionAnchoring.foldedHaystack(
                     of: junction, meetingTitle: "Reunião de agosto")) == nil)
         // The COST, in the same test: a genuine resurrection the candidate
@@ -287,7 +289,7 @@ private let removedClaim = "o piloto foi adiado para setembro"
             detailedNotes: "Resumo do dia: o piloto\n\nfoi adiado para setembro.")
         #expect(
             CorrectionAnchoring.resurrectedClaim(
-                withdrawn: withdrawn,
+                withdrawn: withdrawn.claims,
                 candidateHaystack: CorrectionAnchoring.foldedHaystack(
                     of: split, meetingTitle: "Reunião de agosto")) == nil)
     }

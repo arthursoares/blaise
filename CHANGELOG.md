@@ -2,6 +2,23 @@
 
 All notable changes to Blaise are documented here. Dates are DD/MM/YYYY.
 
+## [1.9.2] — 29/09/2026
+
+A faster notes pane, and corrections across paragraphs.
+
+### Changed
+- **The notes pane is one text view.** Large notes open about three times faster, clicks answer in milliseconds and
+  scrolling runs at 120 fps; very long notes that used to hang open at once.
+- **Selection and pointer** behave like any Mac text app.
+- **A plain click on a checklist item** ticks it and no longer brings up the AI bar.
+
+### Added
+- **AI Correct and Add Note across paragraphs**, bullets and sections; the composer opens under the last selected
+  paragraph.
+
+### Fixed
+- The end of a paragraph could be hidden under a note card or pending correction.
+
 ## [1.9.1] — 28/09/2026
 
 Notes on Sonnet 5.5.

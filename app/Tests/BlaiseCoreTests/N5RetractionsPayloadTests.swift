@@ -318,11 +318,11 @@ private func appSource(_ relativePath: String) throws -> String {
     func predicateUnity() throws {
         let source = try appSource("Sources/BlaiseCore/MeetingCorrections.swift")
         // The core is private and named once; both public entry points reach it.
-        #expect(source.contains("private static func isWithdrawn("))
+        #expect(source.contains("private static func absentPieces("))
         let rowsBody = try #require(functionBody("public static func withdrawnRows(", in: source))
         let claimsBody = try #require(
             functionBody("public static func withdrawnClaims(", in: source))
-        #expect(rowsBody.contains("isWithdrawn("))
+        #expect(rowsBody.contains("absentPieces("))
         #expect(claimsBody.contains("withdrawnRows("))
         // Neither entry point may re-implement the containment itself.
         #expect(!claimsBody.contains("currentHaystack.contains("))
@@ -342,13 +342,15 @@ private func appSource(_ relativePath: String) throws -> String {
             correctionRow(RowID.annotation, budgetClaim, kind: .annotation),
             correctionRow("01ARZ3NDEKTSV4RRFFQ69G5FA5", "   "),
         ]
+        // Every row here is one-piece, so the rendered haystack is never read.
         let withdrawnRows = CorrectionAnchoring.withdrawnRows(
-            corrections: rows, currentHaystack: haystack)
-        #expect(withdrawnRows.map(\.id) == [RowID.erasedApplied, RowID.erasedPending])
-        #expect(withdrawnRows.map(\.quotedText) == [pilotClaim, budgetClaim])
+            corrections: rows, currentHaystack: haystack, renderedHaystack: "")
+        #expect(withdrawnRows.map(\.row.id) == [RowID.erasedApplied, RowID.erasedPending])
+        #expect(withdrawnRows.map(\.row.quotedText) == [pilotClaim, budgetClaim])
         #expect(
-            CorrectionAnchoring.withdrawnClaims(corrections: rows, currentHaystack: haystack)
-                == [pilotClaim, budgetClaim])
+            CorrectionAnchoring.withdrawnClaims(
+                corrections: rows, currentHaystack: haystack, renderedHaystack: "")
+                == .init(claims: [pilotClaim, budgetClaim]))
     }
 
     private func functionBody(_ signature: String, in source: String) -> String? {

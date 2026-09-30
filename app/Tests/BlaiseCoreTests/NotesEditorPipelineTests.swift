@@ -571,6 +571,163 @@ INSTRUCTIONS:
         #expect(!wire.contains("row-"))
     }
 
+    @Test("n7 AC-9: a multi-piece row's line is exactly n7's, labelled from its own instance; every other line unchanged")
+    func multiPieceInstructionLine() async throws {
+        let structured = NotesStructured(
+            title: "Quoll Harbor", summary: "repeat / repeat / repeat",
+            meetingType: .projectReview, detailedNotes: "Detailed repeat.",
+            decisions: ["Keep decision"],
+            actionItems: [ActionItem(owner: "Harlan Voss", text: "Keep action")],
+            userActionItems: [ActionItem(owner: "Sam", text: "Keep personal")])
+        let engine = ScriptedNotesEditorEngine()
+        engine.setOutcomes([.result([])])
+        let harness = try await makeEditorHarness(engine: engine)
+        let (meeting, _) = try await seedEditorMeeting(harness, structured: structured)
+        let t = harness.clock.now()
+        _ = try await insertCorrection(
+            harness.database, meetingID: meeting.id, id: "row-c",
+            section: .summary, quotedText: "repeat", userText: "Use the final repeat.",
+            createdAt: t, occurrence: 2)
+        _ = try await insertCorrection(
+            harness.database, meetingID: meeting.id, id: "row-resolved", status: .resolved,
+            section: .decision, quotedText: "Keep decision", userText: "Retain it",
+            createdAt: t.addingTimeInterval(1))
+        _ = try await insertCorrection(
+            harness.database, meetingID: meeting.id, id: "row-d", status: .applied,
+            section: .actionItem, quotedText: "Keep action", userText: "Retain owner",
+            createdAt: t.addingTimeInterval(2), appliedAt: t)
+        _ = try await insertCorrection(
+            harness.database, meetingID: meeting.id, id: "row-e",
+            section: .detailedNotes, quotedText: "Detailed\n\"repeat\"",
+            userText: "Use\n\"new wording\"", createdAt: t.addingTimeInterval(3))
+        // Summary into the decisions.
+        _ = try await insertCorrection(
+            harness.database, meetingID: meeting.id, id: "row-p",
+            section: .decision, quotedText: "repeat / repeat\u{2029}Keep decision",
+            userText: "The pilot slipped to September; nothing ships before then.",
+            createdAt: t.addingTimeInterval(4))
+        // Three sections, in piece order.
+        _ = try await insertCorrection(
+            harness.database, meetingID: meeting.id, id: "row-q",
+            section: .actionItem,
+            quotedText: "Keep personal\u{2029}Keep decision\u{2029}Keep action",
+            userText: "All three move to June.", createdAt: t.addingTimeInterval(5))
+        // A passage that no longer resolves: the row's own section.
+        _ = try await insertCorrection(
+            harness.database, meetingID: meeting.id, id: "row-r",
+            section: .actionItem, quotedText: "words gone from the notes\u{2029}Keep action",
+            userText: "Drop it.", createdAt: t.addingTimeInterval(6))
+
+        try await harness.pipeline.editPendingNotes(meetingID: meeting.id)
+
+        let request = try #require(engine.requests.first)
+        #expect(request.instructions.map(\.sections) == [
+            [.summary], [.decision], [.actionItem], [.detailedNotes],
+            [.summary, .decision], [.userActionItem, .decision, .actionItem], [.actionItem],
+        ])
+        let wire = try NotesEditorWireContract.userMessage(for: request)
+        let expected = #"""
+CURRENT NOTES:
+{"action_items":[{"owner":"Harlan Voss","text":"Keep action"}],"decisions":["Keep decision"],"detailed_notes":"Detailed repeat.","meeting_type":"project_review","summary":"repeat / repeat / repeat","title":"Quoll Harbor","user_action_items":[{"owner":"Sam","text":"Keep personal"}]}
+INSTRUCTIONS:
+1. In the summary, the current notes say: "repeat". The user corrects: Use the final repeat.
+2. In the decisions, the current notes say: "Keep decision". The user corrects: Retain it
+3. In the action items, the current notes say: "Keep action". The user corrects: Retain owner
+4. In the detailed notes, the current notes say: "Detailed ”repeat”". The user corrects: Use ”new wording”
+5. In the summary and the decisions, the current notes say: "repeat / repeat" / "Keep decision". The user corrects: The pilot slipped to September; nothing ships before then.
+6. In the your action items, the decisions and the action items, the current notes say: "Keep personal" / "Keep decision" / "Keep action". The user corrects: All three move to June.
+7. In the action items, the current notes say: "words gone from the notes" / "Keep action". The user corrects: Drop it.
+"""#
+        #expect(wire.split(separator: "\n") == expected.split(separator: "\n"))
+        #expect(Array(wire.utf8) == Array(expected.utf8))
+        #expect(!wire.contains("occurrence"))
+        #expect(!wire.unicodeScalars.contains("\u{2029}"))
+        // The system prompt is n2 section 5's v9 oracle, unchanged.
+        #expect(
+            EvidencePayloadBuilder.sha256Hex(Data(NotesEditorWireContract.systemPrompt.utf8))
+                == "215dee9c68718b476ccf15f9de3dacd9058ce6ec171c6685ac4034f53cb8b213")
+    }
+
+    @Test("n7 AC-9: a passage row's labels come from its STORED occurrence — the second instance names its own sections")
+    func multiPieceLabelsFollowTheStoredOccurrence() async throws {
+        // Two instances of "Quoll" / "Ship" in the decisions: the first takes
+        // its "Quoll" from the summary, the second from the decision above it.
+        let structured = NotesStructured(
+            title: "Quoll Harbor", summary: "Quoll", meetingType: .projectReview,
+            detailedNotes: "Detailed.", decisions: ["Ship", "Quoll", "Ship"],
+            actionItems: [], userActionItems: [])
+        let engine = ScriptedNotesEditorEngine()
+        engine.setOutcomes([.result([])])
+        let harness = try await makeEditorHarness(engine: engine)
+        let (meeting, _) = try await seedEditorMeeting(harness, structured: structured)
+        let t = harness.clock.now()
+        _ = try await insertCorrection(
+            harness.database, meetingID: meeting.id, id: "row-first",
+            section: .decision, quotedText: "Quoll\u{2029}Ship", userText: "First copy.",
+            createdAt: t, occurrence: 0)
+        _ = try await insertCorrection(
+            harness.database, meetingID: meeting.id, id: "row-second",
+            section: .decision, quotedText: "Quoll\u{2029}Ship", userText: "Second copy.",
+            createdAt: t.addingTimeInterval(1), occurrence: 1)
+
+        try await harness.pipeline.editPendingNotes(meetingID: meeting.id)
+
+        let request = try #require(engine.requests.first)
+        #expect(request.instructions.map(\.sections) == [[.summary, .decision], [.decision]])
+        let wire = try NotesEditorWireContract.userMessage(for: request)
+        let expected = #"""
+INSTRUCTIONS:
+1. In the summary and the decisions, the current notes say: "Quoll" / "Ship". The user corrects: First copy.
+2. In the decisions, the current notes say: "Quoll" / "Ship". The user corrects: Second copy.
+"""#
+        #expect(wire.hasSuffix(expected))
+        #expect(!wire.contains("occurrence"))
+    }
+
+    @Test("n7 AC-8: the recovery boundary in the editor line — (b) same section, (c) another section's earlier copy, (d) piece 1 gone")
+    func recoveryBoundaryEditorLines() async throws {
+        let quote = "Alpha task\u{2029}Bravo task"
+        let cases: [(name: String, structured: NotesStructured, occurrence: Int, line: String)] = [
+            // (b) [A, B, C, A', B]: the selected copy's A rewritten; A resolves
+            // on the first A, same section.
+            ("b", NotesStructured(
+                title: "Quoll Harbor", summary: "Quoll", meetingType: .projectReview, detailedNotes: "Detailed.",
+                decisions: [],
+                actionItems: ["Alpha task", "Bravo task", "Charlie task", "Delta task", "Bravo task"]
+                    .map { ActionItem(owner: "Dana Marsh", text: $0) },
+                userActionItems: []), 1,
+             #"1. In the action items, the current notes say: "Alpha task" / "Bravo task". The user corrects: Move it."#),
+            // (c) The selected copy's A rewritten; the earlier A is in the summary.
+            ("c", NotesStructured(
+                title: "Quoll Harbor", summary: "Alpha task", meetingType: .projectReview, detailedNotes: "Detailed.",
+                decisions: [],
+                actionItems: ["Delta task", "Bravo task"].map { ActionItem(owner: "Dana Marsh", text: $0) },
+                userActionItems: []), 0,
+             #"1. In the summary and the action items, the current notes say: "Alpha task" / "Bravo task". The user corrects: Move it."#),
+            // (d) Piece 1's words gone from the whole document.
+            ("d", NotesStructured(
+                title: "Quoll Harbor", summary: "Quoll", meetingType: .projectReview, detailedNotes: "Detailed.",
+                decisions: [],
+                actionItems: ["Delta task", "Bravo task"].map { ActionItem(owner: "Dana Marsh", text: $0) },
+                userActionItems: []), 0,
+             #"1. In the action items, the current notes say: "Alpha task" / "Bravo task". The user corrects: Move it."#),
+        ]
+        for fixture in cases {
+            let engine = ScriptedNotesEditorEngine()
+            engine.setOutcomes([.result([])])
+            let harness = try await makeEditorHarness(engine: engine)
+            let (meeting, _) = try await seedEditorMeeting(harness, structured: fixture.structured)
+            _ = try await insertCorrection(
+                harness.database, meetingID: meeting.id, id: "row-\(fixture.name)",
+                section: .actionItem, quotedText: quote, userText: "Move it.",
+                createdAt: harness.clock.now(), occurrence: fixture.occurrence)
+            try await harness.pipeline.editPendingNotes(meetingID: meeting.id)
+            let request = try #require(engine.requests.first)
+            let wire = try NotesEditorWireContract.userMessage(for: request)
+            #expect(wire.hasSuffix("INSTRUCTIONS:\n" + fixture.line), "case \(fixture.name)")
+        }
+    }
+
     @Test("AC-4: Harlan/Devin correction changes all three fields and nothing else")
     func harlanDevinMultiFieldFixture() async throws {
         let before = NotesStructured(

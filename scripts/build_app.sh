@@ -64,7 +64,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleVersion</key>
 	<string>__BLAISE_BUILD_NUMBER__</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.9.1</string>
+	<string>1.9.2</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.6.1</string>
 	__BLAISE_SPARKLE_FEED_URL__

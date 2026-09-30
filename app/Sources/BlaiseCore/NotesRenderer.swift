@@ -95,6 +95,7 @@ public enum NotesRenderer {
                 blocks.append(strings.noneMarker)
             }
         }
+        blocks.append(contentsOf: weave.detailedPassageAsides.map { aside($0.text, on: $0.quote, strings: strings) })
         blocks.append("## \(strings.decisions)")
         blocks.append(renderList(s.decisions.map { "- \(normalizeListText($0))" }, emptyMarker: strings.noneMarker))
         blocks.append(contentsOf: weave.decisionAsides.map { aside($0.text, on: $0.quote, strings: strings) })
@@ -130,6 +131,9 @@ public enum NotesRenderer {
         // redundant there); the fenced-blob path renders the quoted form after
         // the whole blob, where adjacency no longer names the anchor.
         var detailedAsides: [Int: [(quote: String, text: String)]] = [:]
+        // A passage anchored in the detailed notes: after the whole section,
+        // quoted by its pieces (a rendered block has no raw paragraph index).
+        var detailedPassageAsides: [(quote: String, text: String)] = []
         var decisionAsides: [(quote: String, text: String)] = []
         var actionAsides: [(quote: String, text: String)] = []
         var userActionAsides: [(quote: String, text: String)] = []
@@ -137,7 +141,14 @@ public enum NotesRenderer {
 
         static func plan(annotations: [MeetingCorrection], structured: NotesStructured) -> AnnotationWeave {
             var weave = AnnotationWeave()
+            let space = annotations.contains {
+                $0.kind == .annotation && CorrectionAnchoring.isPassage($0.quotedText)
+            } ? CorrectionAnchoring.RenderedSpace(structured) : nil
             for row in annotations where row.kind == .annotation {
+                if let space, CorrectionAnchoring.isPassage(row.quotedText) {
+                    weave.placePassage(row, in: space)
+                    continue
+                }
                 let blocks = CorrectionAnchoring.blocks(of: structured, section: row.section)
                 guard
                     let hit = CorrectionAnchoring.resolve(
@@ -161,6 +172,33 @@ public enum NotesRenderer {
                 }
             }
             return weave
+        }
+
+        /// A passage resolved by the passage rule lands at the END of its
+        /// anchor block's section, where a one-paragraph note in that section
+        /// goes; a list aside quotes the anchor block. Unresolved: the tail.
+        private mutating func placePassage(_ row: MeetingCorrection, in space: CorrectionAnchoring.RenderedSpace) {
+            guard
+                let hit = CorrectionAnchoring.resolvePassage(
+                    quote: row.quotedText, occurrence: row.occurrence, section: row.section, in: space)
+            else {
+                unanchored.append((row.quotedText, row.userText))
+                return
+            }
+            let anchorText = space.blocks[hit.instance.anchorBlock].text
+            switch row.section {
+            case .summary:
+                summaryAsides.append(row.userText)
+            case .detailedNotes:
+                detailedPassageAsides.append(
+                    (CorrectionAnchoring.pieces(row.quotedText).joined(separator: " \u{2026} "), row.userText))
+            case .decision:
+                decisionAsides.append((anchorText, row.userText))
+            case .actionItem:
+                actionAsides.append((anchorText, row.userText))
+            case .userActionItem:
+                userActionAsides.append((anchorText, row.userText))
+            }
         }
     }
 

@@ -34,32 +34,6 @@ struct SelectionFrame: Equatable {
     static let blockStart = SelectionFrame(
         first: CGRect(x: 0, y: 0, width: 0, height: 17),
         last: CGRect(x: 0, y: 0, width: 0, height: 17))
-
-    /// The same selection read from a different corner: the text host answers
-    /// in the window's own space, and the block that draws the bar thinks in
-    /// its own.
-    func offset(by origin: CGPoint) -> SelectionFrame {
-        SelectionFrame(
-            first: first.offsetBy(dx: -origin.x, dy: -origin.y),
-            last: last.offsetBy(dx: -origin.x, dy: -origin.y))
-    }
-}
-
-/// Where one notes block sits: in the window, which is the space the text host
-/// answers in, and in the pane, which is what says whether the block is above
-/// or below the fold. Held outside the view state — it changes on every scroll
-/// tick, and nothing should be redrawn for that.
-struct BlockGeometry: Equatable {
-    var window: CGRect
-    var pane: CGRect
-    /// The block's place in the document, which does not move when the pane
-    /// scrolls — where the one selection bar is drawn.
-    var content: CGRect = .zero
-}
-
-@MainActor
-final class BlockGeometryCache {
-    var blocks: [String: BlockGeometry] = [:]
 }
 
 /// How many occurrences of `span` begin before `offset` characters into
@@ -109,12 +83,41 @@ struct EditingTarget: Equatable {
     /// A block-level invocation washes the whole block; a selection washes the
     /// span it came from.
     var isWholeBlock: Bool
+    /// A selection across paragraphs: its pieces. `quotedText` is then the
+    /// pieces joined by U+2029, `occurrence` the passage occurrence, and the
+    /// target's block is the anchor block (the last piece's).
+    var passage: PassageCapture? = nil
 
     /// The span the wash paints, in the host-rendered text: the selected range,
     /// or the whole quoted block when the invocation took no selection. Always
     /// a span, so the fill rides the glyphs instead of the block's row.
     var washedSpan: SelectedSpan {
         SelectedSpan(text: quotedText, occurrence: isWholeBlock ? 0 : spanOccurrence)
+    }
+}
+
+/// A selection across paragraphs, captured (n7 §1): the selected text of each
+/// correctable block it touches, in order, with where each sits in its block's
+/// host text — the ranges the composing marks paint.
+struct PassageCapture: Equatable {
+    struct Piece: Equatable {
+        var anchorID: String
+        var section: MeetingCorrection.Section
+        /// The piece's range in its block's host text.
+        var local: NSRange
+        var text: String
+    }
+
+    var pieces: [Piece]
+
+    /// The stored quote: the pieces joined by U+2029.
+    var quote: String { pieces.map(\.text).joined(separator: "\u{2029}") }
+
+    /// The distinct sections of the pieces, in order.
+    var sections: [MeetingCorrection.Section] {
+        var sections: [MeetingCorrection.Section] = []
+        for piece in pieces where !sections.contains(piece.section) { sections.append(piece.section) }
+        return sections
     }
 }
 
@@ -172,14 +175,29 @@ enum NotesEditingEntry {
         let trimmed = selection?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let usable = !trimmed.isEmpty && CorrectionAnchoring.fold(blockText)
             .contains(CorrectionAnchoring.fold(trimmed))
+        // A stored U+2029 is capture's piece joiner, so one inside the notes
+        // text is quoted as a space.
         return EditingTarget(
             kind: kind, section: section, anchorID: anchorID, blockText: blockText,
-            quotedText: usable ? trimmed : blockText,
+            quotedText: (usable ? trimmed : blockText).replacingOccurrences(of: "\u{2029}", with: " "),
             displayQuote: usable ? trimmed : (hostText ?? blockText), occurrence: occurrence,
             spanOccurrence: usable
                 ? trimmedSpanOccurrence(
                     selection, trimmedTo: trimmed, in: hostText ?? blockText) : 0,
             isWholeBlock: !usable)
+    }
+
+    /// The target for a selection across paragraphs: the pieces as captured,
+    /// under the anchor block (the last piece's), with the passage occurrence
+    /// the capture names. Never the whole-block fallback.
+    static func target(
+        _ kind: EditingTarget.Kind, passage: PassageCapture, anchorBlockText: String, occurrence: Int
+    ) -> EditingTarget {
+        let anchor = passage.pieces[passage.pieces.count - 1]
+        return EditingTarget(
+            kind: kind, section: anchor.section, anchorID: anchor.anchorID, blockText: anchorBlockText,
+            quotedText: passage.quote, displayQuote: NotesEditingText.passage(passage.quote),
+            occurrence: occurrence, isWholeBlock: false, passage: passage)
     }
 
     /// Which occurrence of the TRIMMED quote the user acted on, counted in the
@@ -290,32 +308,6 @@ enum NotesBlockAnchor {
     static func detailed(_ index: Int) -> String { "notes-detailed-\(index)" }
     static func decision(_ index: Int) -> String { "notes-decision-\(index)" }
     static func actionItem(_ index: Int) -> String { "notes-action-\(index)" }
-
-    /// Every block id the pane renders for these notes, in render order. The
-    /// open composer's block is looked up here, so what is on screen and what
-    /// the composer believes still exists cannot drift apart.
-    static func rendered(in structured: NotesStructured) -> [String] {
-        var ids = MarkdownBlocks.parse(structured.summary).indices.map(Self.summary)
-        ids += structured.decisions.indices.map(Self.decision)
-        ids += structured.actionItems
-            .filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .indices.map(Self.actionItem)
-        let body = structured.detailedNotes.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !body.isEmpty {
-            ids += MarkdownBlocks.parse(body).indices.map(Self.detailed)
-        }
-        return ids
-    }
-}
-
-/// Whether the open composer's block is gone from the notes on screen. Block
-/// ids are positional, so a re-synthesis that removes blocks — or leaves fewer
-/// of them than the composing index — retires the id the composer opened on.
-/// It then presents off its retained quote instead of leaving the view tree and
-/// taking the user's typed draft with it.
-func composerIsOrphaned(_ target: EditingTarget?, renderedAnchorIDs: [String]) -> Bool {
-    guard let target else { return false }
-    return !renderedAnchorIDs.contains(target.anchorID)
 }
 
 // MARK: - The teaching callout
@@ -338,39 +330,6 @@ enum NotesEditingCallout {
         guard NotesEditingSettings.showEditingCallout(seen: seen, hasNotes: paragraph != nil)
         else { return nil }
         return paragraph
-    }
-}
-
-// MARK: - Keyboard reach
-
-extension View {
-    /// Keyboard focus for one notes block: it joins the pane's focus chain,
-    /// shows the keyboard's position, and reports itself as what the commands
-    /// aim at. The ring is drawn rather than inherited — the system's focus
-    /// effect does not mark a plain container on this surface.
-    /// `marked` is false where the block already carries a louder mark of its
-    /// own — the selection bar standing on its own words — so one block never
-    /// wears two.
-    func notesBlockFocus(
-        id: String, focus: FocusState<String?>.Binding, marked: Bool = true,
-        onFocus: @escaping () -> Void
-    ) -> some View {
-        focusable()
-            .focusEffectDisabled()
-            .focused(focus, equals: id)
-            .overlay {
-                if focus.wrappedValue == id, marked {
-                    // A hairline, never a frame: the mark says where the keyboard is,
-                    // and it must not outshout the control it puts inside it.
-                    RoundedRectangle(cornerRadius: NotesEditingLayout.markRadius)
-                        .strokeBorder(Design.accent.opacity(0.6), lineWidth: 1)
-                        .padding(-3)
-                        .accessibilityHidden(true)
-                }
-            }
-            .onChange(of: focus.wrappedValue == id) { _, holdsFocus in
-                if holdsFocus { onFocus() }
-            }
     }
 }
 
@@ -693,7 +652,8 @@ enum NotesEditingPresentation {
         rows.enumerated().map { index, row in
             MarginNoteViewModel(
                 id: row.id, text: row.userText, quotedText: row.quotedText,
-                showsQuote: index > 0 || row.status == .stale,
+                showsQuote: index > 0 || row.status == .stale
+                    || CorrectionAnchoring.isPassage(row.quotedText),
                 isStale: row.status == .stale)
         }
     }
@@ -735,72 +695,6 @@ enum AnchorWash: Equatable {
 
     var fill: Double {
         self == .none ? 0 : Self.liveFill
-    }
-}
-
-extension AnchorWash {
-    /// The composing wash painted over an exact span of the block's own text
-    /// instead of behind the whole block: what a selection-scoped invocation
-    /// gets, so the user sees precisely what the instruction targets. A block
-    /// can repeat the same words, so the span names WHICH of its equals the
-    /// user selected. A span the text no longer contains paints nothing rather
-    /// than guessing; an occurrence the text no longer has falls back to its
-    /// last one, the same choice the anchor resolver makes when a rewrite
-    /// collapses duplicates.
-    @MainActor
-    static func composingSpan(in text: AttributedString, span: SelectedSpan) -> AttributedString {
-        let plain = String(text.characters)
-        let matches = Self.ranges(of: span.text, in: plain)
-        guard let found = matches.indices.contains(span.occurrence)
-            ? matches[span.occurrence] : matches.last
-        else { return text }
-        var output = text
-        let start = output.index(
-            output.startIndex,
-            offsetByCharacters: plain.distance(from: plain.startIndex, to: found.lowerBound))
-        let end = output.index(
-            start, offsetByCharacters: plain.distance(from: found.lowerBound, to: found.upperBound))
-        var cues = AttributeContainer()
-        cues.backgroundColor = Design.accent.opacity(AnchorWash.composing.fill)
-        output[start..<end].mergeAttributes(cues)
-        return output
-    }
-
-    /// The span a block's stored annotations ride: the first row's own quote,
-    /// which the host locates in the text it renders. It is the whole line only
-    /// when the person annotated the whole line, so the fill ends at the last
-    /// glyph of the passage instead of spanning the block's row.
-    static func washedSpan(for rows: [MeetingCorrection]) -> SelectedSpan? {
-        rows.first.map { SelectedSpan(text: $0.quotedText) }
-    }
-
-    /// Every range of `span` in `plain`, in order.
-    private static func ranges(of span: String, in plain: String) -> [Range<String.Index>] {
-        guard !span.isEmpty else { return [] }
-        var found: [Range<String.Index>] = []
-        var cursor = plain.startIndex
-        while let next = plain.range(of: span, range: cursor..<plain.endIndex) {
-            found.append(next)
-            cursor = plain.index(after: next.lowerBound)
-        }
-        return found
-    }
-}
-
-extension View {
-    /// Paints the wash behind a block, for the hosts that cannot carry it on
-    /// their glyphs. No outline: a rule around the row reads as a box around
-    /// the block, and the mark belongs to the words. `emphasized` is the margin
-    /// mode's reciprocal hover — hovering a note strengthens its anchor.
-    ///
-    /// Cyan whatever the wash: the anchor mark is one primary, and a violet
-    /// fill would read as a second one.
-    func anchorWash(_ wash: AnchorWash, emphasized: Bool = false) -> some View {
-        let boost = emphasized ? 1.6 : 1.0
-        return padding(.horizontal, wash == .none ? 0 : 4)
-            .background(
-                Design.accent.opacity(wash.fill * boost),
-                in: RoundedRectangle(cornerRadius: NotesEditingLayout.markRadius))
     }
 }
 
@@ -1256,8 +1150,11 @@ struct InlineNoteCard: View {
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             if note.showsQuote, !note.quotedText.isEmpty {
-                AnchorQuote(quote: note.quotedText, limit: 56)
-                    .padding(.top, 1)
+                // A passage cites every piece, one line each.
+                ForEach(Array(CorrectionAnchoring.pieces(note.quotedText).enumerated()), id: \.offset) {
+                    AnchorQuote(quote: $0.element, limit: 56)
+                        .padding(.top, 1)
+                }
             }
             if note.isStale {
                 Text(portuguese ? "Âncora ausente" : "Anchor missing")
@@ -1286,7 +1183,7 @@ struct InlineNoteCard: View {
         let label = portuguese ? "Sua nota" : "Your note"
         guard note.showsQuote, !note.quotedText.isEmpty else { return "\(label): \(note.text)" }
         let on = portuguese ? "sobre" : "on"
-        return "\(label) \(on) \u{201C}\(note.quotedText)\u{201D}: \(note.text)"
+        return "\(label) \(on) \u{201C}\(NotesEditingText.passage(note.quotedText))\u{201D}: \(note.text)"
     }
 }
 
@@ -1308,10 +1205,12 @@ struct MarginRailNote: View {
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
             if note.showsQuote {
-                Text("\u{201C}\(NotesEditingText.clip(note.quotedText, limit: 48))\u{201D}")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.quaternary)
-                    .lineLimit(2)
+                ForEach(Array(CorrectionAnchoring.pieces(note.quotedText).enumerated()), id: \.offset) {
+                    Text("\u{201C}\(NotesEditingText.clip($0.element, limit: 48))\u{201D}")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.quaternary)
+                        .lineLimit(2)
+                }
             }
             if note.isStale {
                 Text(portuguese ? "Âncora ausente" : "Anchor missing")
@@ -1600,7 +1499,7 @@ private struct ChangesCard: View {
                             .foregroundStyle(.primary.opacity(style.bodyInk))
                             .lineLimit(4)
                     }
-                    AnchorQuote(quote: row.quotedText, limit: 70)
+                    AnchorQuote(quote: NotesEditingText.passage(row.quotedText), limit: 70)
                     Text(changesRowTimestamp(row))
                         .font(.system(size: 10))
                         .foregroundStyle(.quaternary)
@@ -1612,7 +1511,7 @@ private struct ChangesCard: View {
             .help("Go to this passage in the notes")
             .accessibilityElement(children: .combine)
             .accessibilityLabel(
-                "\(kindName) on \u{201C}\(row.quotedText)\u{201D}: \(row.userText). \(status)")
+                "\(kindName) on \u{201C}\(NotesEditingText.passage(row.quotedText))\u{201D}: \(row.userText). \(status)")
             .accessibilityHint("Go to this passage in the notes")
 
             if editing { editor }
@@ -1725,5 +1624,11 @@ enum NotesEditingText {
             .filter { !$0.isEmpty }
             .joined(separator: " ")
         return flat.count > limit ? flat.prefix(limit - 1) + "…" : flat
+    }
+
+    /// A stored quote as the composer and the Changes panel show it: a
+    /// passage's pieces joined by " … "; one piece as it is.
+    static func passage(_ quote: String) -> String {
+        CorrectionAnchoring.pieces(quote).joined(separator: " \u{2026} ")
     }
 }

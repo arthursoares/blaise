@@ -332,7 +332,7 @@ public enum NotesPromptBuilder {
             "Where a correction conflicts with the transcript, the correction wins: treat the transcript passage as misheard or misunderstood.")
         for (index, correction) in understanding.enumerated() {
             lines.append(
-                "\(index + 1). In the \(sectionLabel(correction.section)), an earlier draft said: \"\(CorrectionSanitize.promptField(correction.quotedText))\". The user corrects: \(CorrectionSanitize.promptField(correction.userText))")
+                "\(index + 1). In the \(sectionLabel(correction.section)), an earlier draft said: \(CorrectionSanitize.promptQuote(correction.quotedText)). The user corrects: \(CorrectionSanitize.promptField(correction.userText))")
         }
         return lines.joined(separator: "\n")
     }
