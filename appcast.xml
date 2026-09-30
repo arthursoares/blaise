@@ -3,6 +3,42 @@
     <channel>
         <title>Blaise</title>
         <item>
+            <title>1.9.2</title>
+            <pubDate>Tue, 29 Sep 2026 22:51:37 -0300</pubDate>
+            <link>https://github.com/ricardojustus/blaise/releases/tag/v1.9.2</link>
+            <sparkle:version>477</sparkle:version>
+            <sparkle:shortVersionString>1.9.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.6.1</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Blaise 1.9.2: a faster notes pane, and corrections across paragraphs
+
+The notes pane is rebuilt as a single text view. Long notes open and scroll much faster, and AI Correct and Add Note
+now work on a selection that spans several paragraphs.
+
+## What changed
+
+- **Faster notes.** On a large test note (about 20,000 characters), opening goes from about 2 s to 0.65 s, a click
+  answers in about 5 ms instead of 200 ms, and scrolling runs at 120 fps without stutter. Very long notes that used to
+  hang now open in a fraction of a second.
+- **AI Correct and Add Note across paragraphs.** Drag across bullets, paragraphs or sections and correct or annotate
+  the whole passage. The composer opens under the last paragraph you selected, and every selected piece is
+  highlighted.
+- **Selection and pointer behave like any Mac text app.** The selection follows your drag, the text cursor shows over
+  words and the normal pointer everywhere else.
+- **Checklist clicks tick, they don't aim.** Clicking an item in your action items no longer brings up the AI bar;
+  select words or right-click to correct one.
+- **All four looks** (Aquarela, Estúdio, Caderno, Fluido) keep their typography, section chrome and motion.
+- **Fixed:** the end of a paragraph could be hidden under a note card or pending correction.
+- **Upgrading from 1.9.1:** delivered in place by the updater. Meetings, transcripts, notes and settings untouched.
+
+## Assets
+
+- `Blaise-1.9.2.zip`: the notarised, stapled app (macOS 15.6.1+, Apple Silicon)
+- `blaise-meet-extension.zip`: the Chrome extension for Google Meet participant/speaker signals (unchanged)
+]]></description>
+            <enclosure url="https://github.com/ricardojustus/blaise/releases/download/v1.9.2/Blaise-1.9.2.zip" length="32672094" type="application/octet-stream" sparkle:edSignature="/FXSsZgL7mnmiKe4Ta6gp0S993R/kSy4V3hKTtI4/9HjXNZ9SQnRCwq1p4F2YfDhzgwqbpQ0Rp9+q9s8SHUyAw=="/>
+        </item>
+        <item>
             <title>1.9.1</title>
             <pubDate>Mon, 28 Sep 2026 22:25:12 -0300</pubDate>
             <link>https://github.com/ricardojustus/blaise/releases/tag/v1.9.1</link>
@@ -72,44 +108,6 @@ Contributed by Arthur Soares (@arthursoares) in #15.
   participant/speaker signals (unchanged)
 ]]></description>
             <enclosure url="https://github.com/ricardojustus/blaise/releases/download/v1.9.0/Blaise-1.9.0.zip" length="32663330" type="application/octet-stream" sparkle:edSignature="VHk8caM0c0pNm0ibNKEHNV+ddtx/pUdUM76w4nZ2dTPiR+4GN8kDf1TMBjAO6/bV3QZSFUCRui0PSWdNHxxFDA=="/>
-        </item>
-        <item>
-            <title>1.8.0</title>
-            <pubDate>Tue, 22 Sep 2026 16:28:44 -0300</pubDate>
-            <link>https://github.com/ricardojustus/blaise/releases/tag/v1.8.0</link>
-            <sparkle:version>361</sparkle:version>
-            <sparkle:shortVersionString>1.8.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>15.6.1</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Blaise 1.8.0 — the app now updates itself
-
-From this version on, Blaise checks for a new release once a day and offers it in place:
-a dialog with the release notes, one click to install, and the app relaunches on the new
-build. There is also **Blaise → Check for Updates…** for whenever you want to look yourself.
-
-## What changed
-
-- **In-app updates via Sparkle 2.10.0.** Daily check, silent when there is nothing new.
-  Nothing is ever downloaded or installed without your click; the "install automatically"
-  option is deliberately not offered.
-- **Signed twice.** Every update is a notarised, Developer-ID-signed build, and the
-  download itself carries an EdDSA signature that the app verifies against a key baked in
-  at build time. A build without that key (a local `swift build`, a fork) never checks a feed.
-- **Known limit.** If a sheet is open in Blaise (say, the participant confirmation on a
-  meeting) when you click "Install and Relaunch", macOS refuses the quit and nothing visible
-  happens; the update installs the next time you quit Blaise. Close the sheet first, or just
-  quit and reopen.
-- **Upgrading from 1.7.0:** this is the last version you download by hand. Same signing
-  identity, no permission re-prompts; meetings, transcripts, notes and settings untouched.
-
-## Assets
-
-- `Blaise-1.8.0.zip` — the notarised, stapled app (macOS 15.6.1+, Apple Silicon;
-  fully tested on macOS 26 and 27)
-- `blaise-meet-extension.zip` — the Chrome extension for Google Meet
-  participant/speaker signals (unchanged)
-]]></description>
-            <enclosure url="https://github.com/ricardojustus/blaise/releases/download/v1.8.0/Blaise-1.8.0.zip" length="32634471" type="application/octet-stream" sparkle:edSignature="fKV4Ftj55yBDTxDv5XZmSQGJ0wOu0Uamo+FZg8jQ4ivNflRM86wfv3f6IJ0V+7yqfnAMYgZV/QdnVlNbDgnBCQ=="/>
         </item>
     </channel>
 </rss>
