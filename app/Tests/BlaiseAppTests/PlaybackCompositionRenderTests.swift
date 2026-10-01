@@ -110,19 +110,17 @@ struct PlaybackCompositionRenderTests {
         return out
     }
 
-    /// Real time of the loudest 100 ms window in a rendered track.
+    /// Real time of the burst in a rendered track: its energy-weighted centre
+    /// (the track is silent elsewhere). The loudest 100 ms window is ambiguous
+    /// here: every window inside the 1 s burst carries the same energy.
     private func peakTime(_ samples: [Float]) -> Double {
-        let win = Int(Self.rate * 0.1)
-        var bestE = -1.0, bestStart = 0, acc = 0.0, accStart = 0, frame = 0
-        for v in samples {
-            acc += Double(v) * Double(v)
-            frame += 1
-            if frame - accStart >= win {
-                if acc > bestE { bestE = acc; bestStart = accStart }
-                acc = 0; accStart = frame
-            }
+        var energy = 0.0, moment = 0.0
+        for (i, v) in samples.enumerated() {
+            let e = Double(v) * Double(v)
+            energy += e
+            moment += e * Double(i)
         }
-        return Double(bestStart) / Self.rate
+        return moment / energy / Self.rate
     }
 
     /// Dominant frequency (FFT peak) of a steady-tone rendering, ignoring the
@@ -229,7 +227,7 @@ struct PlaybackCompositionRenderTests {
     @Test("mic-drifted: both tracks sync to real time AND the drifted track's pitch is corrected")
     func micDriftedSyncAndPitch() async throws {
         let r = try await renderDriftedPart(driftMic: true)
-        // Sync: both bursts at real t≈50 (≤0.7 s window granularity).
+        // Sync: both bursts centred at real t≈50.
         #expect(abs(r.sysPeakTime - 50.0) < 0.7)
         #expect(abs(r.micPeakTime - 50.0) < 0.7)
         #expect(abs(r.micPeakTime - r.sysPeakTime) < 0.7)

@@ -295,6 +295,7 @@ private struct DetailContent: View {
                         meeting: meeting, notes: model.notes,
                         resolvedSpeakers: model.resolvedSpeakerNames,
                         doneActionKeys: model.doneActionKeys,
+                        timecodeRows: model.timecodes,
                         searchTerms: searchTerms, searchRequest: notesSearchRequest,
                         userActionBoxRequest: userActionBoxRequest,
                         heroArmed: $heroArmed)
@@ -483,6 +484,8 @@ private struct NotesPane: View {
     var resolvedSpeakers: [String] = []
     /// `ActionItemKey`s marked done (live from the detail observation).
     var doneActionKeys: Set<String> = []
+    /// The meeting's timecode anchors (live from the detail observation).
+    var timecodeRows: [NotesTimecode] = []
     /// Stored FTS spellings to highlight. Display-only; never mutates notes.
     var searchTerms: [String] = []
     /// Monotonic request token so repeated clicks on the same result re-scroll.
@@ -534,6 +537,8 @@ private struct NotesPane: View {
     /// The one-text-view document, built only when its text inputs change,
     /// and the scroll requests handed to it.
     @State private var docCache = NotesDocCache()
+    /// Carries mark clicks to the header's player and its state back.
+    @State private var timecodeLink = TimecodeLink()
     @State private var docScroll: NotesDocScrollRequest?
     @State private var docScrollToken = 0
     /// The user-action box's "Completed (n)" disclosure; closed on open.
@@ -694,7 +699,10 @@ private struct NotesPane: View {
     /// only move things placed around it.
     private func notesDocument(_ notes: MeetingNotes) -> some View {
         let structured = notes.structured
-        let portuguese = (meeting.dominantLanguage ?? "").lowercased().hasPrefix("pt")
+        // The notes' own language; a legacy row with none falls back to the meeting's.
+        let portuguese = notes.language.isEmpty
+            ? (meeting.dominantLanguage ?? "").lowercased().hasPrefix("pt")
+            : NotesRenderer.isPortuguese(language: notes.language)
         let doc = docCache.document(
             for: NotesDocInput(
                 structured: structured, doneKeys: doneActionKeys, searchTerms: searchTerms,
@@ -719,6 +727,14 @@ private struct NotesPane: View {
                 beginEditing(kind, on: target)
             }
         }
+        let link = timecodeLink
+        let timecodes = notesPresentation.timecodeLinks
+            ? link.mapping.map { mapping in
+                NotesDocTimecodes(
+                    targets: docCache.timecodes(timecodeRows, for: doc), playbackSeconds: mapping,
+                    mappingGeneration: link.mappingGeneration, playing: link.playingAnchor,
+                    onActivate: { anchor, playback in link.activate(anchor, playbackSeconds: playback) })
+            } : nil
         return NotesDocumentView(
             document: doc, marks: docMarks(rows, pieces: docCache.pieces, composingAnchor: composingAnchor),
             attachments: docAttachments(doc, rows: rows, structured: structured, portuguese: portuguese),
@@ -770,7 +786,7 @@ private struct NotesPane: View {
                 onToggle: { item, done in setDone(item, done: done) },
                 onToggleCompleted: { completedExpanded.toggle() },
                 onScroll: { noteSettleActivity() }),
-            shineTick: shineTick)
+            shineTick: shineTick, timecodes: timecodes)
     }
 
     /// A click that selected no words picks the whole block.
@@ -1284,7 +1300,7 @@ private struct NotesPane: View {
             AudioPlayerView(
                 audioURL: appEnv.database.paths.audioURL(meeting.id),
                 database: appEnv.database, meetingID: meeting.id, tint: pageTint,
-                seed: meeting.id
+                seed: meeting.id, timecodeLink: timecodeLink
             )
             .padding(.top, 6)
         }
@@ -1451,7 +1467,9 @@ private struct NotesPane: View {
             // verbatim. It sits with the meeting's other utilities rather than
             // on a row of its own between the reader and the first sentence.
             if let notes {
-                let portuguese = (meeting.dominantLanguage ?? "").lowercased().hasPrefix("pt")
+                let portuguese = notes.language.isEmpty
+                    ? (meeting.dominantLanguage ?? "").lowercased().hasPrefix("pt")
+                    : NotesRenderer.isPortuguese(language: notes.language)
                 CopyAllButton(
                     label: portuguese ? "Copiar Notas" : "Copy Notes",
                     copiedLabel: portuguese ? "Copiado" : "Copied",
@@ -2613,6 +2631,9 @@ struct AudioPlayerView: View {
     let tint: Color
     /// Stable per-meeting seed for the decorative waveform (estúdio).
     var seed: String = ""
+    /// The notes pane's timecode marks: their requests, the playing block,
+    /// and where transcript time plays in this player's composition.
+    var timecodeLink: TimecodeLink? = nil
     @State private var controller = AudioPlayerController()
     /// Sticky speed shared across meetings (UserDefaults-backed). The shared
     /// store is observable; a computed accessor keeps it out of the
@@ -2708,6 +2729,8 @@ struct AudioPlayerView: View {
                     // resolving so a stale `.ready` cannot enable the transport
                     // over the previous meeting's asset.
                     resolution = .resolving
+                    timecodeLink?.setMapping(nil)
+                    controller.link = timecodeLink
                     // Seed the controller with the sticky speed so the very
                     // first play already honors it.
                     controller.speed = speedStore.speed
@@ -2749,8 +2772,9 @@ struct AudioPlayerView: View {
                                 track: $0.track, url: $0.url, startSeconds: $0.startSeconds)
                         }
                     }
-                    let (asset, audioMix, anyReadable) = await Self.composition(
+                    let (asset, audioMix, inserted) = await Self.composition(
                         for: placements, durations: durations)
+                    let anyReadable = !inserted.isEmpty
                     mixedAsset = asset
                     mixedAudioMix = audioMix
                     // Honest failure (M-3): an empty composition (every file
@@ -2758,15 +2782,30 @@ struct AudioPlayerView: View {
                     // AVPlayerItem over an empty composition stays `.unknown`
                     // forever. Surface the read-error state from the resolved
                     // plan instead of waiting on item status.
-                    resolution = anyReadable ? .ready : .unreadable
                     // Pre-play total = the longest track's end (mic may outrun
                     // system, field example mic 1717.7 s vs system 1578.1 s).
-                    if let seconds = try? await asset.load(.duration).seconds, seconds.isFinite {
-                        fileDuration = seconds
+                    // Readiness and the mapping are set only inside `publish`.
+                    await Self.loadDurationThenPublish(
+                        { try? await asset.load(.duration).seconds }, store: { fileDuration = $0 }
+                    ) {
+                        resolution = anyReadable ? .ready : .unreadable
+                        if anyReadable {
+                            timecodeLink?.setMapping { seconds, track in
+                                CaptureStitcher.playbackSeconds(
+                                    transcriptSeconds: seconds, track: track, parts: parts,
+                                    durations: durations, placements: inserted)
+                            }
+                        }
                     }
                 }
                 .onChange(of: speedStore.speed) { _, newValue in
                     controller.speed = newValue
+                }
+                .onChange(of: controller.failed) { _, failed in
+                    if failed { timecodeLink?.setMapping(nil) }
+                }
+                .onChange(of: timecodeLink?.request) { _, request in
+                    playTimecode(request)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -2787,8 +2826,38 @@ struct AudioPlayerView: View {
                 }
             }
             .frame(maxWidth: 480)
-            .onDisappear { controller.teardown() }
+            .onDisappear {
+                controller.teardown()
+                timecodeLink?.setMapping(nil)
+            }
         }
+    }
+
+    /// Readiness and the marks' mapping are published only once the
+    /// duration is known, so a mark's first click already has the upper
+    /// bound of its seek. A player torn down meanwhile publishes nothing:
+    /// the link may already carry its replacement's state.
+    static func loadDurationThenPublish(
+        _ load: () async -> Double?, store: (Double) -> Void, publish: () -> Void
+    ) async {
+        let seconds = await load()
+        if Task.isCancelled { return }
+        if let seconds, seconds.isFinite { store(seconds) }
+        publish()
+    }
+
+    /// A mark's request: seek (exactly) and play from three seconds before the
+    /// item, or pause the item playing.
+    private func playTimecode(_ request: TimecodeLink.Request?) {
+        guard let request, let mixedAsset, resolution == .ready, !controller.failed else { return }
+        guard let playback = request.playbackSeconds else {
+            controller.pause()
+            return
+        }
+        controller.play(
+            from: TimecodeLink.seekTarget(playback: playback, duration: max(controller.duration, fileDuration)),
+            asset: mixedAsset, audioMix: mixedAudioMix)
+        timecodeLink?.playingAnchor = request.anchorID
     }
 
     static func clock(_ seconds: Double) -> String {
@@ -2833,10 +2902,11 @@ struct AudioPlayerView: View {
     /// returned alongside the composition (AVComposition carries no mix itself);
     /// the controller applies it to the player item.
     ///
-    /// An unreadable file is skipped. `anyReadable` is false when EVERY file was
-    /// skipped (empty composition): an AVPlayerItem over an empty composition
-    /// never resolves to `.failed` (it stays `.unknown` forever), so the caller
-    /// keys the honest read-error state on this flag, not on item status (M-3).
+    /// An unreadable file is skipped. `inserted` lists the placements actually
+    /// inserted; it is empty when EVERY file was skipped (empty composition):
+    /// an AVPlayerItem over an empty composition never resolves to `.failed`
+    /// (it stays `.unknown` forever), so the caller keys the honest read-error
+    /// state on it, not on item status (M-3). Timecode marks map through it.
     ///
     /// Pitch correction (2026-06-12): a `scaleTimeRange`-drifted track is
     /// rendered with PER-TRACK `audioTimePitchAlgorithm = .varispeed` (set on
@@ -2850,8 +2920,9 @@ struct AudioPlayerView: View {
     /// the default 1× pitch perfect.
     static func composition(
         for placements: [CaptureStitcher.PlaybackPlacement], durations: [URL: Double]
-    ) async -> (asset: AVAsset, audioMix: AVAudioMix?, anyReadable: Bool) {
+    ) async -> (asset: AVAsset, audioMix: AVAudioMix?, inserted: [CaptureStitcher.PlaybackPlacement]) {
         let composition = AVMutableComposition()
+        var inserted: [CaptureStitcher.PlaybackPlacement] = []
         // Per-track render parameters: which tracks are system (attenuated) and
         // which were drift-scaled (varispeed pitch correction).
         var systemTracks: [AVMutableCompositionTrack] = []
@@ -2882,6 +2953,7 @@ struct AudioPlayerView: View {
                 composition.removeTrack(compTrack)
                 continue
             }
+            inserted.append(placement)
             // Sync fix (2026-06-12): the capture aggregate's mic and system
             // clocks drift, so a file's own duration is NOT real time. Stretch
             // the inserted segment from its file duration onto the part's
@@ -2901,7 +2973,7 @@ struct AudioPlayerView: View {
             }
             if placement.track == .system { systemTracks.append(compTrack) }
         }
-        let anyReadable = !composition.tracks.isEmpty
+        let anyReadable = !inserted.isEmpty
         // Build per-track mix parameters. A track needs an entry if it is
         // drift-scaled (pitch-correcting varispeed) and/or a system track (mix
         // attenuation). Tracks that need neither are left to the item default
@@ -2912,7 +2984,7 @@ struct AudioPlayerView: View {
         let attenuateSystem = hasMic && !systemTracks.isEmpty
         let parameterized = Set(driftCorrectedTracks).union(
             attenuateSystem ? Set(systemTracks) : [])
-        guard !parameterized.isEmpty else { return (composition, nil, anyReadable) }
+        guard !parameterized.isEmpty else { return (composition, nil, inserted) }
         let mix = AVMutableAudioMix()
         mix.inputParameters = parameterized.map { track in
             let params = AVMutableAudioMixInputParameters(track: track)
@@ -2925,7 +2997,7 @@ struct AudioPlayerView: View {
             }
             return params
         }
-        return (composition, mix, anyReadable)
+        return (composition, mix, inserted)
     }
 }
 
@@ -3068,13 +3140,18 @@ final class PlaybackSpeedStore {
 /// Playback uses `player.rate` (not `play()`, which would reset
 /// the rate to 1×).
 @MainActor @Observable
-private final class AudioPlayerController {
-    private var player: AVPlayer?
+final class AudioPlayerController {
+    private(set) var player: AVPlayer?
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var statusObservation: NSKeyValueObservation?
     private var scrubbing = false
-    private(set) var isPlaying = false
+    /// The notes pane's timecode link: whatever stops playback also clears
+    /// the block marked as playing.
+    weak var link: TimecodeLink?
+    private(set) var isPlaying = false {
+        didSet { if !isPlaying { link?.playingAnchor = nil } }
+    }
     /// The AVPlayerItem failed (unreadable/corrupt audio): transport disabled.
     private(set) var failed = false
     var current: Double = 0
@@ -3104,6 +3181,23 @@ private final class AudioPlayerController {
             player.rate = speed.rate
             isPlaying = true
         }
+    }
+
+    /// Plays from `seconds` (an exact seek) at the sticky speed.
+    func play(from seconds: Double, asset: AVAsset, audioMix: AVAudioMix? = nil) {
+        load(asset: asset, audioMix: audioMix)
+        guard let player, !failed else { return }
+        current = seconds
+        player.seek(
+            to: CMTime(seconds: seconds, preferredTimescale: 600),
+            toleranceBefore: .zero, toleranceAfter: .zero)
+        player.rate = speed.rate
+        isPlaying = true
+    }
+
+    func pause() {
+        player?.pause()
+        isPlaying = false
     }
 
     func scrubEditing(_ editing: Bool) {

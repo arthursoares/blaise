@@ -223,6 +223,26 @@ final class PDFExporter {
 
     // MARK: - Gate
 
+    /// Runs `body`, which runs its own print operation to completion, with the gate held: it never
+    /// overlaps an export's print operation, including one still running after its export timed out.
+    func withPrintGate(_ body: () async -> Void) async {
+        await acquireGate()
+        await body()
+        releaseGate()
+    }
+
+    /// Runs `operation` with its panels as a sheet on `window` and returns when it completes. No
+    /// nested modal loop: other main-actor work keeps running while the panel is open.
+    static func runPrint(_ operation: NSPrintOperation, for window: NSWindow) async -> Bool {
+        let run = PrintRunWaiter()
+        return await run.wait {
+            operation.runModal(
+                for: window, delegate: run,
+                didRun: #selector(PrintRunWaiter.printOperationDidRun(_:success:contextInfo:)),
+                contextInfo: nil)
+        }
+    }
+
     private func acquireGate() async {
         guard gateHeld else {
             gateHeld = true

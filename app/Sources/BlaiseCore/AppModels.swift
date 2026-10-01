@@ -466,6 +466,8 @@ public final class MeetingDetailModel {
     public private(set) var segments: [TranscriptSegment] = []
     /// `ActionItemKey`s of user action items marked done (V1.1, local-only).
     public private(set) var doneActionKeys: Set<String> = []
+    /// The meeting's timecode anchors; marks appear live when a call lands.
+    public private(set) var timecodes: [NotesTimecode] = []
     /// G2 §4: the durable speaker renames for this meeting (label → row),
     /// including stale rows (which render the label unnamed + re-confirm).
     public private(set) var speakerRenames: [String: SpeakerRename] = [:]
@@ -514,7 +516,8 @@ public final class MeetingDetailModel {
     public func start() {
         guard observationTask == nil else { return }
         let id = meetingID
-        let observation = ValueObservation.tracking { db -> (Meeting?, MeetingNotes?, [TranscriptSegment], Set<String>, [SpeakerRename]) in
+        let observation = ValueObservation.tracking {
+            db -> (Meeting?, MeetingNotes?, [TranscriptSegment], Set<String>, [SpeakerRename], [NotesTimecode]) in
             let meeting = try Meeting.fetchOne(db, key: id)
             let notes = try MeetingNotes.fetchOne(db, key: id)
             let segments = try TranscriptSegment
@@ -525,12 +528,15 @@ public final class MeetingDetailModel {
                 db, sql: "SELECT item_key FROM action_item_state WHERE meeting_id = ?",
                 arguments: [id]))
             let renames = try SpeakerRenameStore.all(db, meetingID: id)
-            return (meeting, notes, segments, doneKeys, renames)
+            let timecodes = try NotesTimecodeStore.all(db, meetingID: id)
+            return (meeting, notes, segments, doneKeys, renames, timecodes)
         }
         let pool = database.pool
         observationTask = Task { [weak self] in
             do {
-                for try await (meeting, notes, segments, doneKeys, renames) in observation.values(in: pool) {
+                for try await (meeting, notes, segments, doneKeys, renames, timecodes)
+                    in observation.values(in: pool)
+                {
                     guard let self else { return }
                     self.meeting = meeting
                     self.notes = notes
@@ -538,6 +544,7 @@ public final class MeetingDetailModel {
                     self.doneActionKeys = doneKeys
                     self.speakerRenames = Dictionary(
                         uniqueKeysWithValues: renames.map { ($0.speakerLabel, $0) })
+                    self.timecodes = timecodes
                     self.loaded = true
                 }
             } catch {

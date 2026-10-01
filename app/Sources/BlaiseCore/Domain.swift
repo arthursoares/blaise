@@ -681,6 +681,10 @@ public enum ProcessingJobState: String, Codable, Sendable, CaseIterable {
 public enum ProcessingJobOrigin: String, Codable, Sendable, CaseIterable {
     case user, auto
     case reprocessAll = "reprocess_all"
+
+    /// Whether the user started this run (a user-started run reads the notes
+    /// language setting even for a meeting that already has notes).
+    public var userStarted: Bool { self != .auto }
 }
 
 /// A durable processing-queue job (F1). The queue is the always-on substrate;

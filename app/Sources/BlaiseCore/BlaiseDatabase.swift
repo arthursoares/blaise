@@ -713,6 +713,20 @@ public final class BlaiseDatabase: Sendable {
                 ON "cloud_spend_receipt"("month_key")
                 """)
         }
+        // Timecode links: one row per marked notes block, keyed by its section
+        // and the SHA-256 of its folded text. Not a payload input.
+        migrator.registerMigration("v23") { db in
+            try db.create(table: "notes_timecode") { t in
+                t.column("meeting_id", .text).notNull()
+                    .references("meeting", onDelete: .cascade)
+                t.column("section", .text).notNull()
+                t.column("item_hash", .text).notNull()
+                t.column("start_seconds", .double).notNull()
+                t.column("segment_ord", .integer).notNull()
+                t.column("track", .text).notNull()
+                t.primaryKey(["meeting_id", "section", "item_hash"])
+            }
+        }
         return migrator
     }
 
@@ -835,6 +849,7 @@ public final class BlaiseDatabase: Sendable {
             try meeting.update(db)
 
             try notes.upsert(db)
+            try NotesTimecodeStore.deleteAll(db, meetingID: meetingID)
 
             try midTransactionHook?()
 

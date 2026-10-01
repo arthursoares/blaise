@@ -58,6 +58,7 @@ let keychainProbe: (accessible: Bool, reason: String) = {
         #expect(try store.get(key: key) == "secret-1")
         try store.set(key: key, value: "secret-2") // update path (SecItemUpdate)
         #expect(try store.get(key: key) == "secret-2")
+        #expect(try store.getWithoutUI(key: key) == "secret-2")
         try store.delete(key: key)
         #expect(try store.get(key: key) == nil)
         try store.delete(key: key) // idempotent

@@ -37,6 +37,19 @@ public enum NotesEditingSettings {
         /// `notes.editingCalloutSeen` — Bool; absent ⇒ false ⇒ the one-time
         /// teaching callout is still owed.
         public static let editingCalloutSeen = "notes.editingCalloutSeen"
+        /// `notes.timecodeLinks` — Bool; absent ⇒ true. Off: no anchoring
+        /// calls and no marks; stored rows are kept.
+        public static let timecodeLinks = "notes.timecodeLinks"
+    }
+
+    public static let defaultTimecodeLinks = true
+
+    public static func timecodeLinksEnabled(from store: SettingsStore) async -> Bool {
+        (try? await store.get(Key.timecodeLinks, as: Bool.self)) ?? nil ?? defaultTimecodeLinks
+    }
+
+    public static func setTimecodeLinks(_ enabled: Bool, in store: SettingsStore) async throws {
+        try await store.set(Key.timecodeLinks, to: enabled)
     }
 
     /// A card under the block it belongs to. The rail is the better shape where

@@ -2,9 +2,9 @@ import Foundation
 
 // C6: the response schema + prompt architecture SHARED by both
 // summarization engines. The LLM does NOT output a language field (single
-// language authority: C7's deterministic language-stats step produces
-// `NotesRequest.dominantLanguage`; the prompt RECEIVES the language as an
-// instruction); the schema has none.
+// language authority: `NotesRequest.dominantLanguage` carries the notes'
+// language — the detected language unless the user picked one; the prompt
+// RECEIVES the language as an instruction); the schema has none.
 
 // MARK: - Response JSON schema
 
@@ -287,7 +287,8 @@ public enum NotesPromptBuilder {
             metadata.append("Attendees: \(attendeeNames.joined(separator: ", "))")
         }
         metadata.append(
-            "Dominant language: \(request.dominantLanguage) — write every output field in this language.")
+            "Dominant language: \(request.dominantLanguage) — write every output field in this language."
+                + (request.languageOverridden ? " " + NotesLanguage.overrideClause : ""))
         let aliases = request.user.aliases.isEmpty
             ? "" : " (also: \(request.user.aliases.joined(separator: ", ")))"
         metadata.append("The user is: \(request.user.name)\(aliases)")

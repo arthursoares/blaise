@@ -37,6 +37,8 @@ final class AppUIState {
     /// F1 Inc2: set by the "Reprocess All Meetings…" menu item; presents the
     /// cost-cap confirmation sheet.
     var reprocessAllRequested = false
+    /// Set by the "Connect to Claude…" menu item; presents the connect sheet.
+    var connectClaudeRequested = false
     /// G3 onboarding: presented at most ONCE per launch when the stored
     /// identity is empty (first run / not yet onboarded). Skippable — the app
     /// works unnamed — and re-offerable from Settings, but never nagging: the
@@ -149,10 +151,17 @@ final class ListenerStatusHolder {
 final class NotesPresentationHolder {
     var marginNotesPlacement = NotesEditingSettings.defaultPlacement
     var editingCalloutSeen = false
+    var timecodeLinks = NotesEditingSettings.defaultTimecodeLinks
 
     func load(from store: SettingsStore) async {
         marginNotesPlacement = await NotesEditingSettings.marginNotesPlacement(from: store)
         editingCalloutSeen = await NotesEditingSettings.editingCalloutSeen(from: store)
+        timecodeLinks = await NotesEditingSettings.timecodeLinksEnabled(from: store)
+    }
+
+    func setTimecodeLinks(_ enabled: Bool, in store: SettingsStore) async {
+        timecodeLinks = enabled
+        try? await NotesEditingSettings.setTimecodeLinks(enabled, in: store)
     }
 
     func setPlacement(_ value: MarginNotesPlacement, in store: SettingsStore) async {
@@ -214,6 +223,9 @@ final class AppEnvironment {
     let uiState = AppUIState()
     // C11: live capture.
     let recordingController: RecordingController
+    let backupEngine: BackupEngine
+    /// A restore the user confirmed; the quit handler arms it after in-flight encodes finish.
+    private(set) var confirmedRestore: StagedRestore?
     let captureStatus = CaptureStatusHolder()
     // G12 §2: the two-channel live level meter's lock-free holder. Read ONLY
     // by the meter view (leaf observation) so a ≤ 10 Hz level publish never
@@ -251,19 +263,25 @@ final class AppEnvironment {
     private var silenceWatchdog = SilenceWatchdog()
     private var automationEventTask: Task<Void, Never>?
     private var schedulerTask: Task<Void, Never>?
+    private var backupTask: Task<Void, Never>?
     private var tickerTask: Task<Void, Never>?
     /// D17 self-heal: network-path restoration re-dispatches notes-pending
     /// meetings (same NWPathMonitor pattern as the handoff worker's).
     private var notesPathMonitor: NWPathMonitor?
     private let logger = Logger(subsystem: BlaiseBundle.identifier, category: "app")
 
-    init() throws {
-        let dataRoot: URL
-        if let override = ProcessInfo.processInfo.environment["BLAISE_DATA_ROOT"] {
-            dataRoot = URL(fileURLWithPath: override, isDirectory: true)
-        } else {
-            dataRoot = try BlaiseDatabase.defaultRootURL()
+    /// `BLAISE_DATA_ROOT` (resolved against the working directory when
+    /// relative), else the production root.
+    nonisolated static func dataRoot(environment: [String: String]) throws -> URL {
+        if let override = environment["BLAISE_DATA_ROOT"] {
+            return URL(fileURLWithPath: override, isDirectory: true)
         }
+        return try BlaiseDatabase.defaultRootURL()
+    }
+
+    init() throws {
+        let dataRoot = try Self.dataRoot(environment: ProcessInfo.processInfo.environment)
+        try BackupRestore.applyPendingRestore(dataRoot: dataRoot)
         let database = try BlaiseDatabase(rootURL: dataRoot)
         self.database = database
         let settings = SettingsStore(database: database)
@@ -335,7 +353,8 @@ final class AppEnvironment {
             },
             runJob: { meetingID, origin in
                 _ = try await pipeline.dispatchProcessing(
-                    meetingID: meetingID, refuseCancelled: origin != .user)
+                    meetingID: meetingID, refuseCancelled: origin != .user,
+                    userStarted: origin.userStarted)
             })
         self.processingQueue = processingQueue
         // C3: the Meet-listener post-ready re-mint routes through the queue too
@@ -351,6 +370,9 @@ final class AppEnvironment {
             },
             observer: observerBox)
         self.recordingController = recordingController
+        self.backupEngine = BackupEngine(
+            database: database, secrets: secrets,
+            isRecording: { await recordingController.isRecording })
         sessionBox.set(recordingController)
         let listenerStatus = ListenerStatusHolder()
         self.listenerStatus = listenerStatus
@@ -890,6 +912,33 @@ final class AppEnvironment {
                 try? await Task.sleep(for: .seconds(30))
             }
         }
+
+        // Backup: one tick now, then hourly; the engine decides whether a run is due.
+        backupTask = Task(priority: .utility) { [backupEngine] in
+            while !Task.isCancelled {
+                _ = await backupEngine.tick()
+                try? await Task.sleep(for: .seconds(3600))
+            }
+        }
+    }
+
+    /// Quit Blaise and Restore: the only path that arms a staged restore. AppKit ignores
+    /// `terminate` while a window has a sheet attached, so the quit waits until the closing
+    /// restore sheet is gone from the window that presented it; a sheet on another window does
+    /// not hold it. The wait and the `terminate` run from a run-loop timer, never from a Swift
+    /// concurrency job: `terminate` spins a nested run loop until `applicationShouldTerminate`'s
+    /// main-actor task replies, and inside a main-actor job that loop cannot run main-actor work,
+    /// so the quit would never finish. If the quit is dropped anyway, the confirmation stays in
+    /// memory and the next quit arms the restore.
+    func confirmRestoreAndQuit(_ staged: StagedRestore) {
+        confirmedRestore = staged
+        let presenter = NSApp.keyWindow.map { $0.sheetParent ?? $0 }
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak presenter] timer in
+            guard MainActor.assumeIsolated({ presenter?.attachedSheet == nil }) else { return }
+            timer.invalidate()
+            MainActor.assumeIsolated { NSApp.terminate(nil) }
+        }
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func refreshSchedulerSnapshots() async {

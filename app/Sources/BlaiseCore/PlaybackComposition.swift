@@ -174,6 +174,37 @@ extension CaptureStitcher {
         return placements
     }
 
+    /// Where a transcript moment on `track` plays in the composition the player
+    /// built from `placements` (the placements it actually inserted), or nil
+    /// when that moment is not being played. The transcript axis is the
+    /// stitcher's: per track, each part's file starts at the later of the
+    /// previous file's end and the part's offset (a row-less residue part at
+    /// the previous end) and runs for the file's duration. The player inserts
+    /// a negative start at 0 and stretches a file only when its scale is known
+    /// and differs from 1 by more than 0,0005. With no parts the player plays
+    /// the system file alone, on the transcript's axis.
+    public static func playbackSeconds(
+        transcriptSeconds t: Double, track: CaptureTrack, parts: [PlannedPart],
+        durations: [URL: Double], placements: [PlaybackPlacement]
+    ) -> Double? {
+        guard !parts.isEmpty else { return track == .system ? t : nil }
+        var previousEnd = 0.0
+        var chosen: (url: URL, transcriptStart: Double)?
+        for part in parts.sorted(by: { $0.index < $1.index }) {
+            guard let url = track == .system ? part.systemM4A : part.micM4A else { continue }
+            let start = part.offsetMs.map { max(previousEnd, Double($0) / 1000.0) } ?? previousEnd
+            previousEnd = start + (durations[url] ?? 0)
+            if start <= t { chosen = (url, start) }
+        }
+        guard let chosen,
+            let placement = placements.first(where: { $0.url == chosen.url && $0.track == track })
+        else { return nil }
+        let stretched = placement.scaleKnown && placement.timeScale > 0
+            && abs(placement.timeScale - 1.0) > 0.0005
+        let scale = stretched ? placement.timeScale : 1.0
+        return max(0, placement.startSeconds) + (t - chosen.transcriptStart) * scale
+    }
+
     /// Whether the per-track real-time scaling can be trusted enough to mix
     /// BOTH tracks. Cross-track sync depends on every contributing part having
     /// a closed wall-clock span and every placed file a readable duration; if

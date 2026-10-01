@@ -93,6 +93,8 @@ final class NotesDocument {
     /// The rendered space these blocks' texts come from, folded once per
     /// document: every passage question about these notes asks this value.
     let space: CorrectionAnchoring.RenderedSpace
+    /// The summary and detailed notes as parsed for `space` (block kinds).
+    let parsed: CorrectionAnchoring.ParsedNotes
     /// The pane block standing for each rendered block that is laid out.
     let anchorOfRendered: [Int: String]
     let look: NotesDocLook
@@ -117,10 +119,12 @@ final class NotesDocument {
     init(
         text: NSAttributedString, paragraphs: [NotesDocParagraph], blocks: [NotesDocBlock],
         sections: [NotesDocSection], toggles: [NotesDocToggle], userActionTitle: Int?,
-        completedDisclosure: Int? = nil, space: CorrectionAnchoring.RenderedSpace, look: NotesDocLook,
+        completedDisclosure: Int? = nil, space: CorrectionAnchoring.RenderedSpace,
+        parsed: CorrectionAnchoring.ParsedNotes, look: NotesDocLook,
         userItems: [String] = [], doneUserKeys: Set<String> = []
     ) {
         self.space = space
+        self.parsed = parsed
         self.look = look
         self.userItems = userItems
         self.doneUserKeys = doneUserKeys
@@ -871,7 +875,8 @@ struct NotesDocumentBuilder {
         }
         return NotesDocument(
             text: out, paragraphs: result, blocks: blocks, sections: sections, toggles: toggles,
-            userActionTitle: userActionTitle, completedDisclosure: completedDisclosure, space: space, look: look,
+            userActionTitle: userActionTitle, completedDisclosure: completedDisclosure, space: space,
+            parsed: parsed, look: look,
             userItems: userItems, doneUserKeys: doneUserKeys)
     }
 }
@@ -1097,6 +1102,9 @@ final class NotesDocCache {
     private(set) var pieces: [String: [NotesDocPieceMark]] = [:]
     /// The "Your notes" tail for the same rows and document.
     private(set) var unanchored: [MeetingCorrection] = []
+    private var timecodeInput: [NotesTimecode]?
+    private var timecodeDocument: NotesDocument?
+    private(set) var timecodes: [String: NotesDocTimecode] = [:]
 
     func document(for input: NotesDocInput) -> NotesDocument {
         if let document, self.input == input { return document }
@@ -1115,5 +1123,13 @@ final class NotesDocCache {
         rowsInput = correctionRows
         rowsDocument = document
         return rows
+    }
+
+    func timecodes(_ rows: [NotesTimecode], for document: NotesDocument) -> [String: NotesDocTimecode] {
+        if timecodeInput == rows, timecodeDocument === document { return timecodes }
+        timecodes = notesDocTimecodes(rows, document: document)
+        timecodeInput = rows
+        timecodeDocument = document
+        return timecodes
     }
 }

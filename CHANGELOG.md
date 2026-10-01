@@ -2,6 +2,24 @@
 
 All notable changes to Blaise are documented here. Dates are DD/MM/YYYY.
 
+## [1.10.0] — 01/10/2026
+
+Four features: notes language, a Claude connector, backups, and timecode links.
+
+### Added
+- **Timecode links.** Hover an item in the notes and a play mark appears beside it; click it to hear the meeting from
+  just before that moment, click again to pause. New notes get them automatically (one extra call on the Claude
+  subscription engine); "Generate Timestamps" adds them to an older meeting. Off switch: "Link notes to the
+  recording" in Settings.
+- **Backups.** A Backup tab: daily backups to a folder you choose, optional encryption with a generated password
+  shown once, and restore from a backup.
+- **Connect to Claude.** "Connect to Claude…" sets up a read-only connector so Claude Desktop and Claude Code can
+  search and read your meetings: notes, action items and transcripts.
+- **Notes language.** Auto, English or Portuguese, for new notes and for notes you regenerate yourself.
+
+### Fixed
+- A playback render test measured an ambiguous peak and could fail on synced tracks.
+
 ## [1.9.2] — 29/09/2026
 
 A faster notes pane, and corrections across paragraphs.

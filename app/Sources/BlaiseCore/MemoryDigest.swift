@@ -183,8 +183,13 @@ public struct DigestRequest: Sendable, Equatable {
     /// content. The rest of the notes (summary, detailed body, decisions) is still
     /// NOT fed to the model.
     public var notes: NotesStructured
-    /// C7's deterministic dominant language (the digest content language).
+    /// The notes' language (the detected language unless the user picked one);
+    /// the digest content language.
     public var dominantLanguage: String
+    /// True when `dominantLanguage` differs from the detected language (the
+    /// user's pick, or stored notes kept on an automatic re-run); the prompt
+    /// then carries the override clause.
+    public var languageOverridden: Bool
     public var vocabulary: [String]
     public var user: UserIdentity
     /// T3.1 (md-v3): alias→canonical bindings the digest may resolve, scoped by
@@ -230,7 +235,8 @@ public struct DigestRequest: Sendable, Equatable {
         hostBinding: HostBinding? = nil,
         groundedPersonHints: [GroundedPersonHint] = [],
         knowledgeGlossary: String? = nil,
-        instructions: [NotesEditorInstruction] = []
+        instructions: [NotesEditorInstruction] = [],
+        languageOverridden: Bool = false
     ) {
         self.meeting = meeting
         self.transcript = transcript
@@ -243,6 +249,7 @@ public struct DigestRequest: Sendable, Equatable {
         self.groundedPersonHints = groundedPersonHints
         self.knowledgeGlossary = knowledgeGlossary
         self.instructions = instructions
+        self.languageOverridden = languageOverridden
     }
 }
 
@@ -909,7 +916,8 @@ public enum DigestPromptBuilder {
             metadata.append("Attendees: \(attendeeNames.joined(separator: ", "))")
         }
         metadata.append(
-            "Dominant language: \(request.dominantLanguage) — write the digest content in this language; keep the eight `##` headings and the bracket flags in English.")
+            "Dominant language: \(request.dominantLanguage) — write the digest content in this language; keep the eight `##` headings and the bracket flags in English."
+                + (request.languageOverridden ? " " + NotesLanguage.overrideClause : ""))
         let aliases = request.user.aliases.isEmpty
             ? "" : " (also: \(request.user.aliases.joined(separator: ", ")))"
         metadata.append("The user is: \(request.user.name)\(aliases)")

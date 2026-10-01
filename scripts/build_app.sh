@@ -8,6 +8,7 @@ source "$ROOT/scripts/env.sh"
 
 cd "$ROOT/app"
 "$SWIFT" build -c release --product Blaise -Xlinker -rpath -Xlinker @executable_path/../Frameworks
+"$SWIFT" build -c release --product blaise-mcp
 
 APP="$ROOT/dist/Blaise.app"
 rm -rf "$APP"
@@ -17,6 +18,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # register `dist/Blaise.app` as a second install merely because it exists.
 touch "$ROOT/dist/.metadata_never_index"
 cp "$ROOT/app/.build/release/Blaise" "$APP/Contents/MacOS/Blaise"
+# The read-only MCP helper that Connect to Claude points clients at.
+mkdir -p "$APP/Contents/Helpers"
+cp "$ROOT/app/.build/release/blaise-mcp" "$APP/Contents/Helpers/blaise-mcp"
 if [[ ! -d "$ROOT/app/.build/release/Sparkle.framework" ]]; then
     echo "error: Sparkle.framework is missing from the release build products" >&2
     exit 1
@@ -64,7 +68,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleVersion</key>
 	<string>__BLAISE_BUILD_NUMBER__</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.9.2</string>
+	<string>1.10.0</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.6.1</string>
 	__BLAISE_SPARKLE_FEED_URL__
@@ -179,11 +183,14 @@ if [[ "${BLAISE_RELEASE_SIGN:-}" == "1" ]]; then
     codesign -s "$IDENTITY" --force --options runtime --timestamp "$FRAMEWORK/Versions/B/Updater.app"
     codesign -s "$IDENTITY" --force --options runtime --timestamp "$FRAMEWORK"
     codesign -s "$IDENTITY" --force --options runtime --timestamp "$APP/Contents/Resources/uv"
+    # No entitlements: the helper needs neither microphone nor calendars.
+    codesign -s "$IDENTITY" --force --options runtime --timestamp "$APP/Contents/Helpers/blaise-mcp"
     codesign -s "$IDENTITY" --force --options runtime --timestamp \
         --entitlements "$ROOT/scripts/entitlements.plist" "$APP"
     echo "RELEASE-signed (hardened runtime + timestamp) with: $IDENTITY"
     echo "next: scripts/notarize_app.sh (uploads to Apple — release-time step)"
 elif [[ -n "$IDENTITY" ]] && security find-identity -v -p codesigning 2>/dev/null | grep -qF "$IDENTITY"; then
+    codesign -s "$IDENTITY" --force "$APP/Contents/Helpers/blaise-mcp"
     codesign -s "$IDENTITY" --force "$APP"
     echo "signed with stable identity: $IDENTITY"
 else
@@ -192,7 +199,9 @@ else
     echo "WARNING: falling back to AD-HOC signing — the TCC grants (Microphone +" >&2
     echo "WARNING: System Audio Recording) will NOT survive this rebuild and the" >&2
     echo "WARNING: permission prompts will fire again. Fix the identity and rebuild." >&2
+    codesign -s - --force "$APP/Contents/Helpers/blaise-mcp"
     codesign -s - --force "$APP"
 fi
+codesign --verify --strict --deep "$APP"
 
 echo "$APP"

@@ -368,6 +368,74 @@ struct PDFExporterTests {
         #expect(exporter.loggedFailures == 1)
     }
 
+    @Test("Another print operation waits for an export's print operation, and for its drain after a timeout")
+    func printGateWaitsForAnExport() async throws {
+        let latch = Latch()
+        let started = Latch()
+        let exporter = PDFExporter(
+            render: { request in
+                request.printOperationStarted()
+                started.openNow()
+                await latch.wait()
+                try writeStubPDF(at: request.output, paper: request.paper, pages: 1)
+            },
+            timeout: .seconds(5))
+        let recorder = Recorder()
+
+        // An export in flight.
+        let exporting = Task { @MainActor in try await export(exporter, filename: "in-flight.pdf") }
+        await started.wait()
+        let printing = Task { @MainActor in await exporter.withPrintGate { recorder.enter() } }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(recorder.depth == 0)
+        latch.openNow()
+        let output = try await exporting.value
+        try? FileManager.default.removeItem(at: output.deletingLastPathComponent())
+        await printing.value
+        #expect(recorder.depth == 1)
+        // The print released the gate: the next one gets it.
+        _ = Task { @MainActor in await exporter.withPrintGate { recorder.enter() } }
+        await waitUntil("the gate released after a print") { recorder.depth == 2 }
+
+        // An export that timed out while its print operation was still running.
+        let drainLatch = Latch()
+        let draining = PDFExporter(
+            render: { request in
+                request.printOperationStarted()
+                await drainLatch.wait()
+                try writeStubPDF(at: request.output, paper: request.paper, pages: 1)
+            },
+            timeout: .milliseconds(50))
+        await expectFailure(.timedOut) { try await export(draining, filename: "held.pdf") }
+        let afterTimeout = Task { @MainActor in await draining.withPrintGate { recorder.enter() } }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(recorder.depth == 2)
+        drainLatch.openNow()
+        await afterTimeout.value
+        #expect(recorder.depth == 3)
+    }
+
+    @Test("A print that waits on its panel holds the gate until it completes, then releases it")
+    func printGateHeldUntilAPrintCompletes() async throws {
+        let exporter = PDFExporter()
+        let recorder = Recorder()
+        let started = Latch()
+        let panelClosed = Latch()
+        let printing = Task { @MainActor in
+            await exporter.withPrintGate {
+                started.openNow()
+                await panelClosed.wait()
+            }
+        }
+        await started.wait()
+        _ = Task { @MainActor in await exporter.withPrintGate { recorder.enter() } }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(recorder.depth == 0)
+        panelClosed.openNow()
+        await printing.value
+        await waitUntil("the gate released after the print completed") { recorder.depth == 1 }
+    }
+
     @Test("SC-015(d): the exporter never runs two render stages at once")
     func renderStagesNeverOverlap() async throws {
         let recorder = Recorder()

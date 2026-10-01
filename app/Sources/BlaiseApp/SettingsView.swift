@@ -1,7 +1,7 @@
 import BlaiseCore
 import SwiftUI
 
-// Settings scene: Engines / Automation / Glossary / Identity & Handoff / Usage.
+// Settings scene: Engines / Automation / Notes / Glossary / Identity & Handoff / Backup / Usage.
 
 struct SettingsRootView: View {
     // Screenshot scaffolding: BLAISE_DEMO_SCENE=cloud-spend opens the Usage
@@ -33,6 +33,9 @@ struct SettingsRootView: View {
             IdentityHandoffTab()
                 .tabItem { Label("Identity & Handoff", systemImage: "person.crop.circle.badge.checkmark") }
                 .tag(3)
+            BackupSettingsTab()
+                .tabItem { Label("Backup", systemImage: "externaldrive") }
+                .tag(6)
             UsageTab()
                 .tabItem { Label("Usage", systemImage: "chart.bar") }
                 .tag(4)
@@ -51,9 +54,32 @@ struct NotesSettingsTab: View {
     @State private var style = PDFExportSettings.defaultStyle
     @State private var paper = PDFExportSettings.defaultPaper
     @State private var colophon = PDFExportSettings.defaultColophon
+    @State private var notesLanguage = NotesLanguage.automatic
 
     var body: some View {
         Form {
+            Section("Notes language") {
+                Picker(
+                    "Write notes in",
+                    selection: Binding(
+                        get: { notesLanguage },
+                        set: { value in
+                            notesLanguage = value
+                            Task { try? await NotesLanguage.set(value, in: appEnv.settings) }
+                        })
+                ) {
+                    ForEach(NotesLanguage.allCases, id: \.self) { language in
+                        Text(language.displayName).tag(language)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                Text(
+                    "Applies to new notes and when you regenerate a meeting. Notes you already have stay as they are."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
             Section("Margin notes") {
                 Picker(
                     "Where your notes appear",
@@ -76,6 +102,16 @@ struct NotesSettingsTab: View {
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            }
+
+            Section("Timecode links") {
+                Toggle(
+                    "Link notes to the recording",
+                    isOn: Binding(
+                        get: { presentation.timecodeLinks },
+                        set: { value in
+                            Task { await appEnv.notesPresentation.setTimecodeLinks(value, in: appEnv.settings) }
+                        }))
             }
 
             Section("PDF export") {
@@ -134,6 +170,7 @@ struct NotesSettingsTab: View {
             style = await PDFExportSettings.style(from: appEnv.settings)
             paper = await PDFExportSettings.paper(from: appEnv.settings)
             colophon = await PDFExportSettings.colophon(from: appEnv.settings)
+            notesLanguage = await NotesLanguage.load(from: appEnv.settings)
         }
     }
 }

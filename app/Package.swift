@@ -10,6 +10,7 @@ let package = Package(
     products: [
         .executable(name: "Blaise", targets: ["BlaiseApp"]),
         .library(name: "BlaiseCore", targets: ["BlaiseCore"]),
+        .executable(name: "blaise-mcp", targets: ["BlaiseMCP"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.11.0"),
@@ -72,6 +73,23 @@ let package = Package(
         .executableTarget(
             name: "CrashRunner",
             dependencies: ["BlaiseCore"]
+        ),
+        // Read-only MCP helper shipped in Contents/Helpers. GRDB only: linking
+        // BlaiseCore would bring network, ML and audio frameworks into it.
+        // The server is a library so tests link it without depending on an
+        // executable target (which makes SwiftPM build every dependency's
+        // executables too).
+        .target(
+            name: "BlaiseMCPServer",
+            dependencies: [.product(name: "GRDB", package: "GRDB.swift")]
+        ),
+        .executableTarget(
+            name: "BlaiseMCP",
+            dependencies: ["BlaiseMCPServer"]
+        ),
+        .testTarget(
+            name: "BlaiseMCPTests",
+            dependencies: ["BlaiseMCPServer", "BlaiseCore"]
         ),
         .testTarget(
             name: "BlaiseCoreTests",

@@ -654,16 +654,25 @@ public struct ProcessingQueueRepository: Sendable {
             .filter(sql: "state IN ('pending','running')")
             .fetchOne(db)
         {
-            // H-promote: a USER admission collapsing into an existing AUTO/
-            // reprocess_all PENDING job promotes the job's origin, so the worker
-            // runs it with refuseCancelled=false — otherwise the user's
+            // H-promote: an admission collapsing into an existing PENDING job
+            // promotes the job's origin, never demotes it. A USER admission
+            // promotes an auto/reprocess_all job to user, so the worker runs it
+            // with refuseCancelled=false — otherwise the user's
             // Process/Regenerate of a CANCELLED meeting would silently collapse
-            // into an auto job and be refused. (A running job already captured
-            // its origin, so only pending is promotable.)
-            if origin == .user, existing.origin != .user, existing.state == .pending {
+            // into an auto job and be refused. A reprocess_all admission
+            // promotes an auto job to reprocess_all, so the run counts as
+            // user-started and reads the notes language setting. (A running job
+            // already captured its origin, so only pending is promotable.)
+            let promoted: ProcessingJobOrigin? =
+                switch (origin, existing.origin) {
+                case (.user, .auto), (.user, .reprocessAll): .user
+                case (.reprocessAll, .auto): .reprocessAll
+                default: nil
+                }
+            if let promoted, existing.state == .pending {
                 try db.execute(
                     sql: "UPDATE processing_queue SET origin = ? WHERE id = ?",
-                    arguments: [ProcessingJobOrigin.user.rawValue, existing.id])
+                    arguments: [promoted.rawValue, existing.id])
                 return try ProcessingJob.fetchOne(db, key: existing.id) ?? existing
             }
             return existing

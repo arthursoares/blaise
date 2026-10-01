@@ -79,6 +79,38 @@ import Testing
         #expect(promoted.origin == .user)  // ...but promoted
     }
 
+    @Test func originUserStartedAndReprocessAllPromotion() async throws {
+        #expect(ProcessingJobOrigin.auto.userStarted == false)
+        #expect(ProcessingJobOrigin.user.userStarted == true)
+        #expect(ProcessingJobOrigin.reprocessAll.userStarted == true)
+
+        let (db, repo, meeting) = try await seed()
+        // .auto then .reprocessAll: promoted to .reprocessAll.
+        let auto = try await repo.enqueue(meetingID: meeting.id, origin: .auto)
+        let promoted = try await repo.enqueue(meetingID: meeting.id, origin: .reprocessAll)
+        #expect(promoted.id == auto.id)
+        #expect(promoted.origin == .reprocessAll)
+        // .reprocessAll then .user: promoted to .user.
+        let user = try await repo.enqueue(meetingID: meeting.id, origin: .user)
+        #expect(user.id == auto.id)
+        #expect(user.origin == .user)
+
+        // .user then .reprocessAll: stays .user (never demoted).
+        let m2 = makeMeeting()
+        try await MeetingRepository(database: db).create(m2)
+        _ = try await repo.enqueue(meetingID: m2.id, origin: .user)
+        let kept = try await repo.enqueue(meetingID: m2.id, origin: .reprocessAll)
+        #expect(kept.origin == .user)
+
+        // A running .auto job is never promoted.
+        let (_, repo3, m3) = try await seed()
+        _ = try await repo3.enqueue(meetingID: m3.id, origin: .auto)
+        _ = try #require(try await repo3.claimNext())
+        let collapsed = try await repo3.enqueue(meetingID: m3.id, origin: .reprocessAll)
+        #expect(collapsed.state == .running)
+        #expect(collapsed.origin == .auto)
+    }
+
     @Test func cancelPendingCASCancelsOnlyPendingNotRunning() async throws {
         let (db, repo, meeting) = try await seed()
         let job = try await repo.enqueue(meetingID: meeting.id, origin: .user)

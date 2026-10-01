@@ -1,5 +1,6 @@
 import BlaiseCore
 import SwiftUI
+import os
 import UniformTypeIdentifiers
 
 // C10 app shell: the real app surface (D16 Direction A), replacing the C1
@@ -56,6 +57,14 @@ final class BlaiseAppDelegate: NSObject, NSApplicationDelegate {
             // CAFs until the next launch's sweep.
             await controller.awaitQuiescence()
             await MainActor.run {
+                if let restore = environment.confirmedRestore {
+                    do {
+                        try BackupRestore.arm(restore, dataRoot: environment.database.rootURL)
+                    } catch {
+                        Logger(subsystem: BlaiseBundle.identifier, category: "backup")
+                            .error("restore not armed: \(String(describing: type(of: error)), privacy: .public)")
+                    }
+                }
                 sender.reply(toApplicationShouldTerminate: true)
             }
         }
@@ -139,6 +148,11 @@ struct BlaiseApplication: App {
         .commands {
             CommandGroup(after: .appInfo) {
                 CheckForUpdatesCommandButton(controller: updateController)
+                if let environment {
+                    Button("Connect to Claude…") {
+                        environment.uiState.connectClaudeRequested = true
+                    }
+                }
             }
             ProcessingQueueCommands()
             CommandGroup(after: .newItem) {
@@ -154,6 +168,10 @@ struct BlaiseApplication: App {
                     RewriteNotesCommandButton()
                         .environment(environment)
                         .environment(environment.uiState)
+                    GenerateTimestampsCommandButton()
+                        .environment(environment)
+                        .environment(environment.uiState)
+                        .environment(environment.notesPresentation)
                     ExportPDFCommandButton()
                         .environment(environment.uiState)
                 }
@@ -263,6 +281,24 @@ struct RewriteNotesCommandButton: View {
             }
         }
         .disabled(uiState.selectedMeetingID == nil)
+    }
+}
+
+/// Links the selected meeting's current notes to the recording with one
+/// anchoring call; the notes, transcript and digest are not touched. Marks
+/// appear when the call lands; there is no other feedback.
+struct GenerateTimestampsCommandButton: View {
+    @Environment(AppEnvironment.self) private var appEnv
+    @Environment(AppUIState.self) private var uiState
+    @Environment(NotesPresentationHolder.self) private var notesPresentation
+
+    var body: some View {
+        Button("Generate Timestamps") {
+            guard let selected = uiState.selectedMeetingID else { return }
+            let pipeline = appEnv.pipeline
+            Task { await pipeline.generateTimestamps(meetingID: selected) }
+        }
+        .disabled(uiState.selectedMeetingID == nil || !notesPresentation.timecodeLinks)
     }
 }
 
@@ -466,6 +502,9 @@ struct MainWindow: View {
             }
             .sheet(isPresented: $uiState.reprocessAllRequested) {
                 ReprocessAllSheet { uiState.reprocessAllRequested = false }
+            }
+            .sheet(isPresented: $uiState.connectClaudeRequested) {
+                ConnectClaudeSheet { uiState.connectClaudeRequested = false }
             }
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                 guard let provider = providers.first else { return false }

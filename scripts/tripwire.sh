@@ -62,6 +62,8 @@ allow_ric() {
     app/Tests/BlaiseCoreTests/HandoffWorkerTests.swift) return 0 ;;
     app/Tests/BlaiseCoreTests/ClaudeEngineTests.swift) return 0 ;;
     app/Tests/BlaiseCoreTests/NotesSynthesisTests.swift) return 0 ;;
+    app/Sources/BlaiseMCPServer/Library.swift) return 0 ;;
+    app/Tests/BlaiseMCPTests/MCPConformanceTests.swift|app/Tests/BlaiseMCPTests/MCPReadOnlyTests.swift) return 0 ;;
     *) return 1 ;;
   esac
 }

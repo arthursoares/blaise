@@ -82,6 +82,8 @@ struct NotesDocumentView: NSViewRepresentable {
     let callbacks: NotesDocCallbacks
     /// Fluido: a change sweeps the shine over the notes (they just materialized).
     var shineTick = 0
+    /// Timecode marks; nil when the switch is off or the audio is not ready.
+    var timecodes: NotesDocTimecodes? = nil
 
     func makeCoordinator() -> NotesDocController { NotesDocController() }
 
@@ -111,6 +113,12 @@ final class NotesDocTextView: NSTextView {
         // as a right-click and picks nothing.
         if event.modifierFlags.contains(.control) {
             if let menu = menu(for: event) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
+            return
+        }
+        // A click on a timecode mark plays or pauses; it never selects or
+        // picks. The second press of a double click does nothing.
+        if let anchor = controller?.timecodeHit(at: convert(event.locationInWindow, from: nil)) {
+            if event.clickCount == 1 { controller?.activateTimecode(anchor) }
             return
         }
         // A double or triple click selects words the way a click does: it
@@ -161,13 +169,35 @@ final class NotesDocTextView: NSTextView {
     override func resetCursorRects() {}
 
     override func cursorUpdate(with event: NSEvent) {
-        controller?.cursor(at: convert(event.locationInWindow, from: nil))?.set()
+        let point = convert(event.locationInWindow, from: nil)
+        controller?.pointerMoved(to: point)
+        controller?.cursor(at: point)?.set()
     }
 
     /// Not the text view's own (it sets the I-beam wherever the pointer moves,
     /// placed pieces included).
     override func mouseMoved(with event: NSEvent) {
-        controller?.cursor(at: convert(event.locationInWindow, from: nil))?.set()
+        let point = convert(event.locationInWindow, from: nil)
+        controller?.pointerMoved(to: point)
+        controller?.cursor(at: point)?.set()
+    }
+
+    /// Only for leaving the view: a timecode mark shows while the pointer is
+    /// over its block.
+    private var exitTracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        guard exitTracking == nil else { return }
+        let area = NSTrackingArea(
+            rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        exitTracking = area
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        controller?.pointerLeft()
     }
 
     /// A drag-selection is under way: the I-beam until the release.
@@ -180,7 +210,11 @@ final class NotesDocTextView: NSTextView {
             NSCursor.iBeam.set()
         } else if !stillSelecting, dragSelecting {
             dragSelecting = false
-            if let window { controller?.cursor(at: convert(window.mouseLocationOutsideOfEventStream, from: nil))?.set() }
+            if let window {
+                let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+                controller?.pointerMoved(to: point)
+                controller?.cursor(at: point)?.set()
+            }
         }
     }
 
@@ -310,6 +344,25 @@ final class NotesDocAccessibilityLink: NSAccessibilityElement {
         let range = range
         guard let url else { return false }
         MainActor.assumeIsolated { controller?.textView.clicked(onLink: url, at: range.location) }
+        return true
+    }
+}
+
+/// A block's timecode mark: a button before the block's text.
+final class NotesDocAccessibilityTimecode: NSAccessibilityElement {
+    weak var controller: NotesDocController?
+    var anchorID = ""
+
+    override func accessibilityFrame() -> NSRect {
+        let controller = controller
+        let anchorID = anchorID
+        return MainActor.assumeIsolated { controller?.timecodeScreenFrame(anchorID) } ?? .zero
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        let controller = controller
+        let anchorID = anchorID
+        MainActor.assumeIsolated { controller?.activateTimecode(anchorID) }
         return true
     }
 }
@@ -525,12 +578,14 @@ final class NotesDocController: NSObject, NSTextViewDelegate {
 
     @objc private func scrolled() {
         if !scrollingSelf { pinned = nil }
+        refreshHover()
         spec?.callbacks.onScroll()
     }
 
     // MARK: Update from SwiftUI
 
     func update(_ new: NotesDocumentView) {
+        let timecodesChanged = TimecodeKey(new.timecodes) != timecodeKey
         spec = new
         barContentStale = true
         accessibilityCache = nil
@@ -553,6 +608,119 @@ final class NotesDocController: NSObject, NSTextViewDelegate {
             lastScrollToken = request.token
             DispatchQueue.main.async { [weak self] in self?.scroll(to: request) }
         }
+        if timecodesChanged {
+            timecodeKey = TimecodeKey(new.timecodes)
+            invalidateGutter(hoveredBlock)
+            NSAccessibility.post(element: textView, notification: .layoutChanged)
+        }
+    }
+
+    // MARK: Timecode marks
+
+    /// What the marks depend on, for change detection.
+    private struct TimecodeKey: Equatable {
+        var targets: [String: NotesDocTimecode] = [:]
+        var generation = -1
+        var playing: String?
+
+        init() {}
+
+        init(_ timecodes: NotesDocTimecodes?) {
+            guard let timecodes else { return }
+            targets = timecodes.targets
+            generation = timecodes.mappingGeneration
+            playing = timecodes.playing
+        }
+    }
+    private var timecodeKey = TimecodeKey()
+    /// The block under the pointer; only its mark is drawn.
+    private(set) var hoveredBlock: String?
+    /// Where the pointer last was, in window coordinates, while it is over
+    /// the view: a scroll or a layout change moves blocks under a pointer
+    /// that stays put.
+    private var pointerInWindow: NSPoint?
+
+    /// Where a block's mark plays, nil when it has none.
+    private func timecodePlayback(_ anchor: String) -> Double? {
+        spec?.timecodes?.playback(anchor)
+    }
+
+    /// The mark's hit area: 22 × 22 centred on the glyph, which sits 18 left
+    /// of the text column on the block's first line.
+    static func timecodeHitRect(lineMidY: CGFloat, originX: CGFloat) -> NSRect {
+        NSRect(x: originX - 18 - 11, y: lineMidY - 11, width: 22, height: 22)
+    }
+
+    /// The block laid out at the pointer's height, the gutter included.
+    private func blockUnderPointer(y: CGFloat) -> NotesDocBlock? {
+        guard let doc = document, let index = paragraphStart(at: NSPoint(x: textView.textContainerOrigin.x, y: y))
+        else { return nil }
+        return doc.block(atCharacter: index)
+    }
+
+    private func timecodeRect(_ anchor: String) -> NSRect? {
+        guard let block = document?.block(anchor), let lines = lines(block.paragraph) else { return nil }
+        return Self.timecodeHitRect(lineMidY: lines.first.midY, originX: textView.textContainerOrigin.x)
+    }
+
+    private func invalidateGutter(_ anchor: String?) {
+        guard let anchor, spec?.timecodes?.targets[anchor] != nil, let rect = timecodeRect(anchor) else { return }
+        textView.setNeedsDisplay(rect)
+    }
+
+    /// With no marks (the switch off, the player not ready) nothing is
+    /// looked up and nothing is hovered.
+    func pointerMoved(to point: NSPoint) {
+        pointerInWindow = textView.convert(point, to: nil)
+        let anchor = spec?.timecodes == nil ? nil : blockUnderPointer(y: point.y)?.anchorID
+        guard anchor != hoveredBlock else { return }
+        let previous = hoveredBlock
+        hoveredBlock = anchor
+        invalidateGutter(previous)
+        invalidateGutter(anchor)
+    }
+
+    func pointerLeft() {
+        pointerInWindow = nil
+        let previous = hoveredBlock
+        hoveredBlock = nil
+        invalidateGutter(previous)
+    }
+
+    private func refreshHover() {
+        if let pointerInWindow { pointerMoved(to: textView.convert(pointerInWindow, from: nil)) }
+    }
+
+    /// The block whose mark is under a point.
+    func timecodeHit(at point: NSPoint) -> String? {
+        return timecodeHit(at: point, block: blockUnderPointer(y: point.y)?.anchorID)
+    }
+
+    /// `anchor`'s mark, when it has one and its hit area holds the point.
+    private func timecodeHit(at point: NSPoint, block anchor: String?) -> String? {
+        guard let anchor, timecodePlayback(anchor) != nil, timecodeRect(anchor)?.contains(point) == true
+        else { return nil }
+        return anchor
+    }
+
+    func activateTimecode(_ anchor: String) {
+        guard let timecodes = spec?.timecodes, let playback = timecodes.playback(anchor) else { return }
+        timecodes.onActivate(anchor, playback)
+    }
+
+    /// "Play from m:ss", or "Pause" for the item playing.
+    private func timecodeTitle(_ anchor: String) -> String? {
+        guard let playback = timecodePlayback(anchor) else { return nil }
+        return spec?.timecodes?.playing == anchor ? "Pause" : "Play from \(AudioPlayerView.clock(playback))"
+    }
+
+    fileprivate func timecodeScreenFrame(_ anchor: String) -> NSRect {
+        guard let rect = timecodeRect(anchor), let window = textView.window else { return .zero }
+        return window.convertToScreen(textView.convert(rect, to: nil))
+    }
+
+    @objc private func menuTimecode() {
+        if let anchor = menuBlock?.anchorID { activateTimecode(anchor) }
     }
 
     /// A new string: set once, laid out whole (exact height, no estimated
@@ -1121,6 +1289,8 @@ final class NotesDocController: NSObject, NSTextViewDelegate {
         overlay.frame = textView.bounds
         textView.needsDisplay = true
         holdPinnedScroll()
+        // Text that moved under a pointer that stayed put.
+        refreshHover()
     }
 
     // MARK: Section boxes
@@ -1466,6 +1636,8 @@ final class NotesDocController: NSObject, NSTextViewDelegate {
     /// The pointer at a point of the text view: the arrow over a placed
     /// piece, nil over a text input in one (it keeps its own).
     func cursor(at point: NSPoint) -> NSCursor? {
+        // Every caller has just moved the hover to this point.
+        if timecodeHit(at: point, block: hoveredBlock) != nil { return .pointingHand }
         if let hit = overlay.hitTest(point) { return hit is NSText || hit is NSTextField ? nil : .arrow }
         guard let index = character(at: point), let storage = textView.textStorage, index < storage.length,
             segment(NSRange(location: index, length: 1))?.insetBy(dx: -1, dy: -1).contains(point) == true
@@ -1581,6 +1753,16 @@ final class NotesDocController: NSObject, NSTextViewDelegate {
             if paragraph == doc.completedDisclosure, let disclosureView {
                 return [disclosureView]
             }
+            // A block with a timecode mark starts with its play button.
+            if let block, let title = timecodeTitle(block.anchorID) {
+                let button = NotesDocAccessibilityTimecode()
+                button.controller = self
+                button.anchorID = block.anchorID
+                button.setAccessibilityRole(.button)
+                button.setAccessibilityLabel(title)
+                button.setAccessibilityParent(parent)
+                out.append(button)
+            }
             // A checklist item reads its done button first, as today's row does.
             if let toggle = toggleAt[paragraph] { out.append(toggle) }
             if let element = text(paragraph, role: .textArea, parent: parent) {
@@ -1655,6 +1837,12 @@ final class NotesDocController: NSObject, NSTextViewDelegate {
         // the block's actions, as today, and the text's selection is left alone.
         let menu = (self.block(at: point) != nil || aimed != nil ? system() : nil) ?? NSMenu()
         var index = 0
+        if let title = timecodeTitle(block.anchorID) {
+            let item = NSMenuItem(title: title, action: #selector(menuTimecode), keyEquivalent: "")
+            item.target = self
+            menu.insertItem(item, at: index)
+            index += 1
+        }
         if offers.correct {
             let item = NSMenuItem(
                 title: "\(SelectionActionBar.title(.correct))…", action: #selector(menuCorrect), keyEquivalent: "")
@@ -1878,6 +2066,17 @@ final class NotesDocController: NSObject, NSTextViewDelegate {
                 let box = NSRect(x: origin.x + leading, y: lineRect.minY, width: 12, height: lineRect.height)
                 drawSymbol("checkmark.seal.fill", size: 11, weight: .regular, color: NSColor(Design.support), centeredIn: box)
             }
+        }
+
+        // The hovered block's timecode mark, in the left inset.
+        if let anchor = hoveredBlock, timecodePlayback(anchor) != nil, let rect = timecodeRect(anchor),
+            rect.intersects(dirty)
+        {
+            let playing = spec?.timecodes?.playing == anchor
+            drawSymbol(
+                playing ? "pause.circle.fill" : "play.circle", size: 12, weight: .regular,
+                color: playing ? NSColor(Design.accent) : NotesDocStyle.ink(NotesDocStyle.tertiary),
+                centeredIn: rect)
         }
 
         // Marks: today's rounded, side-bled fill behind the exact words; a

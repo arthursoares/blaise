@@ -281,7 +281,7 @@ private func applyTheRecordedProductionResidue(at url: URL) throws {
 
 private let fullMigrationSequence = [
     "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14",
-    "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22",
+    "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23",
 ]
 
 // MARK: - The shared end-state battery
@@ -425,7 +425,7 @@ private func assertUpgradedEndState(at url: URL, before: PreservationSnapshot) t
 /// never read as migration corruption.
 private func assertTheAppOpensTheMigratedFile(root: URL) async throws {
     let database = try BlaiseDatabase(rootURL: root)
-    #expect(try await HealthCheck.run(database).schemaVersion == 22)
+    #expect(try await HealthCheck.run(database).schemaVersion == 23)
     let notes = try #require(
         try await NotesRepository(database: database).fetch(meetingID: digestBearingMeeting))
     #expect(notes.memoryDigest == fixtureDigest)

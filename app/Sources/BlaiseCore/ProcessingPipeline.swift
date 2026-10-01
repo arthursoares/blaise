@@ -223,6 +223,30 @@ public struct PipelineRunRecord: Codable, Sendable {
     }
 }
 
+/// How one anchoring call ended. Never shown to the user.
+public enum TimecodeAnchoringOutcome: Sendable, Equatable {
+    /// The answer's rows replaced the meeting's rows.
+    case written(Int)
+    /// The notes changed during the call; nothing was written.
+    case stale
+    /// No notes, no item or no transcript segment, or no anchoring engine.
+    case noCall
+    /// The answer was not the schema's shape; nothing was written.
+    case unparseable
+    /// The call or the write failed; nothing was written.
+    case failed
+
+    var logClass: String {
+        switch self {
+        case .written(let count): return "written \(count)"
+        case .stale: return "stale"
+        case .noCall: return "no call"
+        case .unparseable: return "unparseable"
+        case .failed: return "failed"
+        }
+    }
+}
+
 // MARK: - Handoff kick seam
 
 /// C8 wires the real `HandoffWorker` here; until it lands, the pipeline's
@@ -328,6 +352,12 @@ public actor ProcessingPipeline {
         let task: Task<Void, Never>
     }
     private var sleepingNotesEditorActivations: [MeetingID: SleepingNotesEditorActivation] = [:]
+
+    /// Anchoring calls started by a trigger and not yet finished writing.
+    /// Each entry removes itself after its write, so an absent entry means
+    /// that call's outcome is already in the database.
+    private var timecodeAnchoringTasks:
+        [UUID: (meetingID: MeetingID, task: Task<TimecodeAnchoringOutcome, Never>)] = [:]
 
     /// G15 §2 ask bookkeeping, all consumed by the notes-stage gate.
     /// `participantStopAsks`: the confirmation was already raised for this
@@ -576,7 +606,8 @@ public actor ProcessingPipeline {
     public func process(meetingID: MeetingID, sourceWAV: URL? = nil) async throws -> PipelineRunRecord {
         try await chain.run {
             try await self.runBody(
-                meetingID: meetingID, sourceWAV: sourceWAV, regeneration: false, captured: false)
+                meetingID: meetingID, sourceWAV: sourceWAV, regeneration: false, captured: false,
+                userStarted: true)
         }
     }
 
@@ -589,7 +620,8 @@ public actor ProcessingPipeline {
     public func processCaptured(meetingID: MeetingID) async throws -> PipelineRunRecord {
         try await chain.run {
             try await self.runBody(
-                meetingID: meetingID, sourceWAV: nil, regeneration: false, captured: true)
+                meetingID: meetingID, sourceWAV: nil, regeneration: false, captured: true,
+                userStarted: true)
         }
     }
 
@@ -606,7 +638,8 @@ public actor ProcessingPipeline {
         let captured = (meeting?.captured ?? false) || hasMicTrack(meetingID)
         return try await chain.run {
             try await self.runBody(
-                meetingID: meetingID, sourceWAV: nil, regeneration: true, captured: captured)
+                meetingID: meetingID, sourceWAV: nil, regeneration: true, captured: captured,
+                userStarted: true)
         }
     }
 
@@ -637,9 +670,12 @@ public actor ProcessingPipeline {
     /// Process action and explicit Regenerate pass the default `false` — they
     /// ARE the sanctioned exits from `cancelled` (no deadlock). The check is
     /// INSIDE the chain so it sees the committed status.
+    ///
+    /// `userStarted`: false for an automatic run, which keeps an already-noted
+    /// meeting's stored notes language instead of reading the setting.
     @discardableResult
     public func dispatchProcessing(
-        meetingID: MeetingID, refuseCancelled: Bool = false
+        meetingID: MeetingID, refuseCancelled: Bool = false, userStarted: Bool = true
     ) async throws -> PipelineRunRecord {
         try await chain.run {
             guard
@@ -657,7 +693,8 @@ public actor ProcessingPipeline {
             if !captured { captured = await self.hasMicTrack(meetingID) }
             return try await self.runBody(
                 meetingID: meetingID, sourceWAV: nil,
-                regeneration: meeting.status == .ready, captured: captured)
+                regeneration: meeting.status == .ready, captured: captured,
+                userStarted: userStarted)
         }
     }
 
@@ -1014,6 +1051,7 @@ public actor ProcessingPipeline {
             // the rename row now also substitutes into notes.structured (layer 1),
             // and any still-unresolved label is neutralized (layer 2).
             let labelMap = await self.slabelMap(meetingID: meetingID, segments: finalSegments)
+            let structuredBefore = notes.structured
             notes.structured = SLabelNeutralizer.neutralize(
                 notes: notes.structured, labelMap: labelMap, language: notes.language,
                 groundedMLabels: Self.groundedMicLabels(in: finalSegments)).notes
@@ -1042,6 +1080,9 @@ public actor ProcessingPipeline {
             let rootURL = self.database.rootURL
             try await self.database.pool.write { [notes] db in
                 try notes.upsert(db)
+                try TimecodeAnchoring.carry(
+                    db, meetingID: meetingID, before: structuredBefore, after: notes.structured,
+                    mode: .nameChange)
                 try MeetingCorrectionStore.applyReanchor(db, updates: reanchorUpdates)
                 _ = try HandoffRepository.enqueue(
                     db, rootURL: rootURL, meetingID: meetingID,
@@ -1221,6 +1262,7 @@ public actor ProcessingPipeline {
             // label map reads the just-written rename rows, so a NH-D correction
             // renders the corrected speaker name into notes owners too.
             let labelMap = await self.slabelMap(meetingID: meetingID, segments: segments)
+            let structuredBefore = notes.structured
             notes.structured = SLabelNeutralizer.neutralize(
                 notes: edited, labelMap: labelMap, language: notes.language,
                 groundedMLabels: Self.groundedMicLabels(in: segments)).notes
@@ -1279,6 +1321,9 @@ public actor ProcessingPipeline {
             let rootURL = self.database.rootURL
             try await self.database.pool.write { [notes, quoteRewrites] db in
                 try notes.upsert(db)
+                try TimecodeAnchoring.carry(
+                    db, meetingID: meetingID, before: structuredBefore, after: notes.structured,
+                    mode: .nameChange)
                 // Quote rewrites before the re-anchor: the rewritten quotes are
                 // what the re-anchor result was computed against, so both land
                 // in one transaction with the mint they describe.
@@ -1713,6 +1758,9 @@ public actor ProcessingPipeline {
                 try await persistNotesEditorResult(
                     meeting: meeting, storedNotes: storedNotes,
                     editedStructured: applied.notes,
+                    listOrigins: TimecodeAnchoring.listOrigins(
+                        before: storedNotes.structured, operations: result.operations,
+                        effective: applied.effectiveOperations),
                     effectiveTitleOperation: effectiveTitleOperation,
                     completionSnapshots: completionSnapshots,
                     citedCompletionPositions: citedCompletionPositions)
@@ -1827,6 +1875,7 @@ public actor ProcessingPipeline {
         meeting: Meeting,
         storedNotes: MeetingNotes,
         editedStructured: NotesStructured,
+        listOrigins: TimecodeAnchoring.ListOrigins,
         effectiveTitleOperation: Bool,
         completionSnapshots: [Int: NotesEditorCompletionSnapshot],
         citedCompletionPositions: Set<Int>
@@ -1900,6 +1949,9 @@ public actor ProcessingPipeline {
         let observedActivationID = sleepingNotesEditorActivations[meetingID]?.id
         let hasPendingUnderstanding = try await database.pool.write { [notes] db -> Bool in
             try notes.upsert(db)
+            try TimecodeAnchoring.carry(
+                db, meetingID: meetingID, before: storedNotes.structured,
+                after: notes.structured, mode: .notesEditor(listOrigins: listOrigins))
             try MeetingCorrectionStore.applyReanchor(db, updates: reanchorUpdates)
             for position in citedCompletionPositions.sorted() {
                 guard let snapshot = completionSnapshots[position] else { continue }
@@ -1983,7 +2035,7 @@ public actor ProcessingPipeline {
         return try await notesOnlyStages(
             meeting: meeting, segments: segments, dominantLanguage: dominantLanguage,
             asrProvenance: asrProvenance, context: context, vocabulary: userLoad.vocabulary,
-            hadNotesBefore: true, applyNameProposals: false)
+            hadNotesBefore: true, applyNameProposals: false, userStarted: true)
     }
 
     /// The deterministic notes re-mint (render with current annotations →
@@ -2781,6 +2833,9 @@ public actor ProcessingPipeline {
         var resolvedScopedAliasBindings: [AliasPair]?
         var harvestCandidate: VoiceProfileCandidate?
         var harvestPendingAppend: VoiceProfilePendingAppend?
+        /// Whether the user started this run; the notes stage passes it to
+        /// `NotesLanguage.forRun`.
+        var userStarted = true
 
         init(meetingID: MeetingID, regeneration: Bool) {
             self.currentStage = regeneration ? .transcode : .ingest
@@ -2806,7 +2861,8 @@ public actor ProcessingPipeline {
     }
 
     private func runBody(
-        meetingID: MeetingID, sourceWAV: URL?, regeneration: Bool, captured: Bool
+        meetingID: MeetingID, sourceWAV: URL?, regeneration: Bool, captured: Bool,
+        userStarted: Bool
     ) async throws -> PipelineRunRecord {
         // Processing start AND regenerate() are pending-events sweep
         // triggers (C10): matched batches must land in
@@ -2845,6 +2901,7 @@ public actor ProcessingPipeline {
 
         let context = RunContext(meetingID: meetingID, regeneration: regeneration)
         context.cancelToken = cancelToken
+        context.userStarted = userStarted
         // Temp artifacts (decoded WAVs): deleted on every exit path.
         let tempWAV = tempDirectory
             .appendingPathComponent("blaise-pipeline-\(meetingID)-\(UUID().uuidString).wav")
@@ -3038,10 +3095,17 @@ public actor ProcessingPipeline {
         context.consumedCorrections = correctionRowsForRequest
             .filter { $0.kind == .understanding && $0.status == .pending }
             .map { ($0.id, $0.quotedText, $0.userText) }
+        // The notes language is decided once, here. `dominantLanguage` stays the
+        // detected value: the transcript persist, export and run record use it.
+        let storedNotes = try await NotesRepository(database: database).fetch(meetingID: meetingID)
+        let notesLanguage = await NotesLanguage.forRun(
+            userStarted: context.userStarted, storedNotesLanguage: storedNotes?.language,
+            detected: dominantLanguage, store: settings)
+        let languageOverridden = notesLanguage != dominantLanguage
         let notesRequest = NotesRequest(
             meeting: meeting,
             transcript: segments,
-            dominantLanguage: dominantLanguage,
+            dominantLanguage: notesLanguage,
             vocabulary: vocabulary.canonicalTerms,
             user: user,
             // #101: grounded person-mention hints — derived IDENTICALLY here and
@@ -3054,7 +3118,8 @@ public actor ProcessingPipeline {
             // excluded: they render deterministically and never enter a prompt.
             corrections: correctionRowsForRequest
                 .filter { $0.kind == .understanding }
-                .map(NotesCorrection.init(row:)))
+                .map(NotesCorrection.init(row:)),
+            languageOverridden: languageOverridden)
         // G15: the participant-confirmation gate is evaluated ONCE here, at
         // notes-stage entry (transcript + diarization already produced and about
         // to persist). When it fires, the run resolves to notes-pending with the
@@ -3180,7 +3245,7 @@ public actor ProcessingPipeline {
         // belongs to the outer wrapper, which runs after this return.
         if try await withholdsResurrectedClaim(
             meetingID: meetingID, meeting: meeting, corrections: correctionRowsForRequest,
-            candidate: substituted.structured, dominantLanguage: dominantLanguage,
+            candidate: substituted.structured, dominantLanguage: notesLanguage,
             context: context)
         {
             return context.record
@@ -3192,7 +3257,8 @@ public actor ProcessingPipeline {
         // is run through SLabelNeutralizer.neutralizeText before persist.
         let digestOutcome = await generateMemoryDigest(
             meetingID: meetingID, meeting: meeting, notes: substituted.structured,
-            segments: segments, dominantLanguage: dominantLanguage,
+            segments: segments, dominantLanguage: notesLanguage,
+            languageOverridden: languageOverridden,
             vocabulary: vocabulary, user: user, context: context,
             corrections: context.record.corrections)
         let digest = Self.digestStringOrNil(digestOutcome)
@@ -3205,9 +3271,10 @@ public actor ProcessingPipeline {
         // swallow the debt.
         try await persistNotesAndFinalize(
             meetingID: meetingID, notesResult: substituted,
-            dominantLanguage: dominantLanguage, meetingTitle: meeting.title,
+            dominantLanguage: notesLanguage, meetingTitle: meeting.title,
             user: user, context: context, memoryDigest: digest,
             digestPendingReason: Self.digestFailureReason(digestOutcome))
+        await triggerTimecodeAnchoring(afterNotesOf: context)
         await handoffKicker.kick()
 
         // Terminal event (single writer): a successful run with a fallback
@@ -4501,7 +4568,7 @@ public actor ProcessingPipeline {
     /// context so the persist step records it for the next resume.
     private func generateMemoryDigest(
         meetingID: MeetingID, meeting: Meeting, notes: NotesStructured,
-        segments: [TranscriptSegment], dominantLanguage: String,
+        segments: [TranscriptSegment], dominantLanguage: String, languageOverridden: Bool,
         vocabulary: PipelineVocabulary, user: UserIdentity, context: RunContext,
         corrections: [AppliedCorrection] = [],
         scopedAliasBindingsOverride: [AliasPair]? = nil
@@ -4583,7 +4650,8 @@ public actor ProcessingPipeline {
             hostBinding: hostBinding,
             groundedPersonHints: groundedPersonHints,
             knowledgeGlossary: knowledgeGlossary,
-            instructions: instructions)
+            instructions: instructions,
+            languageOverridden: languageOverridden)
 
         // DEV-ONLY recall-gate capture (env-gated; OFF by default; NEVER alters
         // the digest, the payload, or any persisted state). When
@@ -4943,6 +5011,112 @@ public actor ProcessingPipeline {
             groundedMLabels: Self.groundedMicLabels(in: segments)).notes
     }
 
+    // MARK: - Timecode links
+
+    /// Fire-and-forget: after new notes are committed, one anchoring call on
+    /// the engine that wrote them, when the Settings switch is on and that
+    /// engine can anchor. Never a link of the pipeline's run chain.
+    private func triggerTimecodeAnchoring(afterNotesOf context: RunContext) async {
+        let meetingID = context.record.meetingID
+        let purpose: CloudSpendPurpose =
+            context.notesPurpose ?? (context.record.regeneration ? .regeneration : .generation)
+        let engine = registry.summarizationEngines.first { $0.id == context.record.notesEngineID }
+        await startTimecodeAnchoring(meetingID: meetingID, engine: engine, purpose: purpose)
+    }
+
+    /// The Generate Timestamps command: the same fire-and-forget trigger on
+    /// the current notes, with the currently selected notes engine.
+    public func generateTimestamps(meetingID: MeetingID) async {
+        let engine = (try? await resolver.resolveSummarization())?.engine
+        await startTimecodeAnchoring(meetingID: meetingID, engine: engine, purpose: .regeneration)
+    }
+
+    private func startTimecodeAnchoring(
+        meetingID: MeetingID, engine: (any SummarizationEngine)?, purpose: CloudSpendPurpose
+    ) async {
+        guard await NotesEditingSettings.timecodeLinksEnabled(from: settings),
+            let anchoring = engine as? any TimecodeAnchoringEngine
+        else { return }
+        let key = UUID()
+        let task = Task {
+            let outcome = await self.anchorTimecodes(
+                meetingID: meetingID, engine: anchoring, purpose: purpose)
+            await self.forgetTimecodeAnchoring(key)
+            return outcome
+        }
+        timecodeAnchoringTasks[key] = (meetingID, task)
+    }
+
+    private func forgetTimecodeAnchoring(_ key: UUID) {
+        timecodeAnchoringTasks[key] = nil
+    }
+
+    /// Test seam: waits for every triggered anchoring call of this meeting
+    /// that has not yet finished writing, and returns their outcomes.
+    func awaitTimecodeAnchoring(meetingID: MeetingID) async -> [TimecodeAnchoringOutcome] {
+        let tasks = timecodeAnchoringTasks.values.filter { $0.meetingID == meetingID }.map(\.task)
+        var outcomes: [TimecodeAnchoringOutcome] = []
+        for task in tasks { outcomes.append(await task.value) }
+        return outcomes
+    }
+
+    /// One anchoring call and its write, awaited: the currently selected
+    /// notes engine, purpose `regeneration`. Reads no setting; the triggers
+    /// check the switch.
+    public func anchorTimecodes(meetingID: MeetingID) async -> TimecodeAnchoringOutcome {
+        guard let engine = (try? await resolver.resolveSummarization())?.engine
+            as? any TimecodeAnchoringEngine
+        else { return .noCall }
+        return await anchorTimecodes(meetingID: meetingID, engine: engine, purpose: .regeneration)
+    }
+
+    private func anchorTimecodes(
+        meetingID: MeetingID, engine: any TimecodeAnchoringEngine, purpose: CloudSpendPurpose
+    ) async -> TimecodeAnchoringOutcome {
+        let database = self.database
+        let outcome: TimecodeAnchoringOutcome
+        do {
+            let answer = try await engine.anchorTimecodes(
+                meetingID: meetingID, purpose: purpose,
+                prepare: {
+                    let inputs = try await database.pool.read {
+                        db -> (NotesStructured, [TranscriptSegment])? in
+                        guard let notes = try MeetingNotes.fetchOne(db, key: meetingID) else {
+                            return nil
+                        }
+                        let segments = try TranscriptSegment.fetchAll(
+                            db,
+                            sql: "SELECT * FROM transcript_segment WHERE meeting_id = ? ORDER BY ord",
+                            arguments: [meetingID])
+                        return (notes.structured, segments)
+                    }
+                    guard let (structured, segments) = inputs else { return nil }
+                    return TimecodeAnchoring.prompt(
+                        meetingID: meetingID, structured: structured, segments: segments)
+                })
+            if let answer {
+                let rows = try TimecodeAnchoring.rows(for: answer)
+                let written = try await database.pool.write { db -> Bool in
+                    guard let current = try MeetingNotes.fetchOne(db, key: meetingID),
+                        current.structured == answer.prompt.structured
+                    else { return false }
+                    try NotesTimecodeStore.replace(db, meetingID: meetingID, with: rows)
+                    return true
+                }
+                outcome = written ? .written(rows.count) : .stale
+            } else {
+                outcome = .noCall
+            }
+        } catch is DecodingError {
+            outcome = .unparseable
+        } catch {
+            outcome = .failed
+        }
+        logger.info(
+            "timecode anchoring \(meetingID, privacy: .public): \(outcome.logClass, privacy: .public)")
+        return outcome
+    }
+
     // MARK: - Stages 12+13 (shared by the full run and the notes-only resume)
 
     /// persistNotes (render in the persisted dominant language) + finalize
@@ -5085,7 +5259,10 @@ public actor ProcessingPipeline {
                 digestPromptVersion: memoryDigest == nil
                     ? nil : DigestPromptBuilder.shippedVersion.rawValue)
             if !deferNotesInstall {
-                try await NotesRepository(database: self.database).upsert(notes)
+                try await self.database.pool.write { db in
+                    try notes.upsert(db)
+                    try NotesTimecodeStore.deleteAll(db, meetingID: meetingID)
+                }
                 try Data(markdown.utf8).write(to: paths.notesURL(meetingID), options: .atomic)
             }
             return notes
@@ -5397,7 +5574,7 @@ public actor ProcessingPipeline {
             meeting: meeting, segments: segments, dominantLanguage: dominantLanguage,
             asrProvenance: asrProvenance, context: context, vocabulary: vocabulary,
             confirmingParticipants: confirmingParticipants, hadNotesBefore: hadNotesBefore,
-            applyNameProposals: !hadNotesBefore)
+            applyNameProposals: !hadNotesBefore, userStarted: false)
     }
 
     /// `applyNameProposals`: a D17 pending-resume that mints the meeting's
@@ -5410,7 +5587,7 @@ public actor ProcessingPipeline {
         meeting: Meeting, segments: [TranscriptSegment], dominantLanguage: String,
         asrProvenance: ASRProvenance, context: RunContext, vocabulary: PipelineVocabulary,
         confirmingParticipants: Bool = false, hadNotesBefore: Bool = false,
-        applyNameProposals: Bool = true
+        applyNameProposals: Bool = true, userStarted: Bool
     ) async throws -> PipelineRunRecord {
         let meetingID = meeting.id
         let user = await userIdentity()
@@ -5444,6 +5621,14 @@ public actor ProcessingPipeline {
             context.consumedCorrections = correctionRowsForRequest
                 .filter { $0.kind == .understanding && $0.status == .pending }
                 .map { ($0.id, $0.quotedText, $0.userText) }
+            // The notes language, decided once by the same rule as the full run;
+            // `dominantLanguage` stays the detected value for the transcript.
+            let storedNotes = try await NotesRepository(database: database)
+                .fetch(meetingID: meetingID)
+            let notesLanguage = await NotesLanguage.forRun(
+                userStarted: userStarted, storedNotesLanguage: storedNotes?.language,
+                detected: dominantLanguage, store: settings)
+            let languageOverridden = notesLanguage != dominantLanguage
             // Same prompt inputs as the pending run's stage 9: the persisted
             // segments ARE that run's stage-9 transcript (a pending run applies
             // no LLM names — there were no proposals), and the prompt reads only
@@ -5453,7 +5638,7 @@ public actor ProcessingPipeline {
             let request = NotesRequest(
                 meeting: meeting,
                 transcript: segments,
-                dominantLanguage: dominantLanguage,
+                dominantLanguage: notesLanguage,
                 vocabulary: vocabulary.canonicalTerms,
                 user: user,
                 // #101: SAME derivation as the full-run stage-9 build (same
@@ -5465,7 +5650,8 @@ public actor ProcessingPipeline {
                 // as the full run (request parity holds — same loader).
                 corrections: correctionRowsForRequest
                     .filter { $0.kind == .understanding }
-                    .map(NotesCorrection.init(row:)))
+                    .map(NotesCorrection.init(row:)),
+                languageOverridden: languageOverridden)
 
             let outcome = try await stage(.notes, context, meetingID) {
                 try await self.generateNotesWithFallback(request, context: context)
@@ -5546,7 +5732,7 @@ public actor ProcessingPipeline {
             if try await withholdsResurrectedClaim(
                 meetingID: meetingID, meeting: meeting,
                 corrections: correctionRowsForRequest,
-                candidate: substituted.structured, dominantLanguage: dominantLanguage,
+                candidate: substituted.structured, dominantLanguage: notesLanguage,
                 context: context)
             {
                 emit(.runCompleted(meetingID))
@@ -5558,18 +5744,20 @@ public actor ProcessingPipeline {
             // produces a fresh digest from them.
             let digestOutcome = await generateMemoryDigest(
                 meetingID: meetingID, meeting: meeting, notes: substituted.structured,
-                segments: finalSegments, dominantLanguage: dominantLanguage,
+                segments: finalSegments, dominantLanguage: notesLanguage,
+                languageOverridden: languageOverridden,
                 vocabulary: vocabulary, user: user, context: context)
             let digest = Self.digestStringOrNil(digestOutcome)
 
             try await persistNotesAndFinalize(
                 meetingID: meetingID, notesResult: substituted,
-                dominantLanguage: dominantLanguage, meetingTitle: meeting.title,
+                dominantLanguage: notesLanguage, meetingTitle: meeting.title,
                 user: user, context: context, memoryDigest: digest,
                 // No-regress: nothing replaces the stored notes row or notes.md
                 // until the finalize transaction has committed.
                 deferNotesInstall: true,
                 digestPendingReason: Self.digestFailureReason(digestOutcome))
+            await triggerTimecodeAnchoring(afterNotesOf: context)
             await handoffKicker.kick()
             await writeTerminalNote(
                 meetingID: meetingID, fallback: context.record.fallback,
@@ -5721,7 +5909,9 @@ public actor ProcessingPipeline {
             meeting.status == .ready,
             DigestPendingClass.isPending(meeting.lastProcessingError),
             var notes = try await NotesRepository(database: database).fetch(meetingID: meetingID),
-            let dominantLanguage = meeting.dominantLanguage
+            // The heal matches the notes that exist: their stored language,
+            // empty ⇒ the meeting's detected language. The setting is not read.
+            let notesLanguage = notes.language.isEmpty ? meeting.dominantLanguage : notes.language
         else { return false }
 
         let segments = try await TranscriptRepository(database: database)
@@ -5757,7 +5947,8 @@ public actor ProcessingPipeline {
             ? nil : notes.scopedAliasBindings
         let outcome = await generateMemoryDigest(
             meetingID: meetingID, meeting: meeting, notes: notes.structured,
-            segments: segments, dominantLanguage: dominantLanguage,
+            segments: segments, dominantLanguage: notesLanguage,
+            languageOverridden: notesLanguage != meeting.dominantLanguage,
             vocabulary: vocabulary, user: user, context: context,
             scopedAliasBindingsOverride: aliasOverride)
 

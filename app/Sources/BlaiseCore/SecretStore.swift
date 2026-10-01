@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 import Synchronization
 
@@ -7,8 +8,14 @@ import Synchronization
 /// in-memory store.
 public protocol SecretStore: Sendable {
     func get(key: String) throws -> String?
+    /// A read that never shows system UI; throws where UI would be needed.
+    func getWithoutUI(key: String) throws -> String?
     func set(key: String, value: String) throws
     func delete(key: String) throws
+}
+
+extension SecretStore {
+    public func getWithoutUI(key: String) throws -> String? { try get(key: key) }
 }
 
 public struct SecretStoreError: Error, Equatable, Sendable {
@@ -34,7 +41,20 @@ public struct KeychainSecretStore: SecretStore {
     }
 
     public func get(key: String) throws -> String? {
+        try read(key: key, allowUI: true)
+    }
+
+    public func getWithoutUI(key: String) throws -> String? {
+        try read(key: key, allowUI: false)
+    }
+
+    private func read(key: String, allowUI: Bool) throws -> String? {
         var query = baseQuery(key: key)
+        if !allowUI {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext as String] = context
+        }
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?

@@ -142,8 +142,7 @@ public struct NotesRequest: Codable, Sendable, Equatable {
     public var meeting: Meeting
     /// Speaker-attributed, corrected transcript.
     public var transcript: [TranscriptSegment]
-    /// Producer: C7's deterministic language-stats step over the transcript —
-    /// recomputable for regeneration; never fabricated.
+    /// The notes' language (the detected language unless the user picked one).
     public var dominantLanguage: String
     public var vocabulary: [String]
     public var user: UserIdentity
@@ -160,6 +159,11 @@ public struct NotesRequest: Codable, Sendable, Equatable {
     /// renders NO block (byte-identical user message); `decodeIfPresent ?? []`
     /// keeps requests predating the field round-tripping.
     public var corrections: [NotesCorrection]
+    /// True when `dominantLanguage` differs from the detected language (the
+    /// user's pick, or stored notes kept on an automatic re-run); the prompt
+    /// then carries the override clause.
+    /// `decodeIfPresent ?? false` keeps requests predating the field decoding.
+    public var languageOverridden: Bool
 
     public init(
         meeting: Meeting,
@@ -168,7 +172,8 @@ public struct NotesRequest: Codable, Sendable, Equatable {
         vocabulary: [String],
         user: UserIdentity,
         groundedPersonHints: [GroundedPersonHint] = [],
-        corrections: [NotesCorrection] = []
+        corrections: [NotesCorrection] = [],
+        languageOverridden: Bool = false
     ) {
         self.meeting = meeting
         self.transcript = transcript
@@ -177,12 +182,14 @@ public struct NotesRequest: Codable, Sendable, Equatable {
         self.user = user
         self.groundedPersonHints = groundedPersonHints
         self.corrections = corrections
+        self.languageOverridden = languageOverridden
     }
 
     enum CodingKeys: String, CodingKey {
         case meeting, transcript, vocabulary, user, corrections
         case dominantLanguage = "dominant_language"
         case groundedPersonHints = "grounded_person_hints"
+        case languageOverridden = "language_overridden"
     }
 
     public init(from decoder: Decoder) throws {
@@ -197,6 +204,8 @@ public struct NotesRequest: Codable, Sendable, Equatable {
             try container.decodeIfPresent([GroundedPersonHint].self, forKey: .groundedPersonHints) ?? []
         self.corrections =
             try container.decodeIfPresent([NotesCorrection].self, forKey: .corrections) ?? []
+        self.languageOverridden =
+            try container.decodeIfPresent(Bool.self, forKey: .languageOverridden) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -208,6 +217,7 @@ public struct NotesRequest: Codable, Sendable, Equatable {
         try container.encode(user, forKey: .user)
         try container.encode(groundedPersonHints, forKey: .groundedPersonHints)
         try container.encode(corrections, forKey: .corrections)
+        try container.encode(languageOverridden, forKey: .languageOverridden)
     }
 }
 

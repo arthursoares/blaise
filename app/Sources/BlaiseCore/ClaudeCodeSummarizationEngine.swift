@@ -25,7 +25,7 @@ import os
 /// simply ABSENT from the child and the CLI authenticates with the OAuth token
 /// alone. This is the same env-hygiene rule the MLX engine enforces.
 public actor ClaudeCodeSummarizationEngine: SummarizationEngine, NotesEditingEngine,
-    DigestEditingEngine
+    DigestEditingEngine, TimecodeAnchoringEngine
 {
     public static let engineID = "claude-cli"
     /// The wire model the CLI runs. Deliberately NOT the API engine's model:
@@ -123,7 +123,8 @@ public actor ClaudeCodeSummarizationEngine: SummarizationEngine, NotesEditingEng
     /// The subprocess chokepoint seam: real impl wraps `SubprocessRunner.run`; the
     /// test impl returns a canned `claude -p --output-format json` envelope.
     public typealias CommandRunner = @Sendable (
-        _ executable: URL, _ args: [String], _ env: [String: String], _ stdin: Data?
+        _ executable: URL, _ args: [String], _ env: [String: String], _ stdin: Data?,
+        _ timeout: TimeInterval
     ) async throws -> SubprocessOutcomeLike
 
     private let configuration: EngineConfiguration
@@ -165,11 +166,11 @@ public actor ClaudeCodeSummarizationEngine: SummarizationEngine, NotesEditingEng
         return dir
     }()
 
-    private static let realRunner: CommandRunner = { executable, args, env, stdin in
+    private static let realRunner: CommandRunner = { executable, args, env, stdin, timeout in
         let outcome = try await SubprocessRunner.run(
             executable: executable, arguments: args, environment: env,
             currentDirectory: ClaudeCodeSummarizationEngine.cleanWorkingDirectory,
-            stdin: stdin, timeout: ClaudeCodeSummarizationEngine.callTimeout)
+            stdin: stdin, timeout: timeout)
         return SubprocessOutcomeLike(
             stdout: outcome.stdout, stderrTail: outcome.stderrTail,
             exitStatus: outcome.exitStatus, terminationReason: outcome.terminationReason,
@@ -394,7 +395,8 @@ public actor ClaudeCodeSummarizationEngine: SummarizationEngine, NotesEditingEng
     private func invoke(
         system: String, user: String, purpose: CloudSpendPurpose, meetingID: MeetingID?,
         jsonSchema: String? = nil,
-        editorMode: Bool = false
+        editorMode: Bool = false,
+        timeout: TimeInterval = callTimeout
     ) async throws -> String {
         if Task.isCancelled || CancellationToken.current?.isCancelled == true {
             throw EngineError.cancelled
@@ -455,7 +457,7 @@ public actor ClaudeCodeSummarizationEngine: SummarizationEngine, NotesEditingEng
             }
             do {
                 return try await runOnce(
-                    binary: binary, args: args, env: env, stdin: stdin,
+                    binary: binary, args: args, env: env, stdin: stdin, timeout: timeout,
                     purpose: purpose, meetingID: meetingID,
                     expectStructuredOutput: expectStructuredOutput,
                     requiresStructuredOutput: editorMode)
@@ -490,13 +492,14 @@ public actor ClaudeCodeSummarizationEngine: SummarizationEngine, NotesEditingEng
     /// model's prose). Otherwise (the digest path) `result` is returned, unchanged.
     private func runOnce(
         binary: URL, args: [String], env: [String: String], stdin: Data,
+        timeout: TimeInterval,
         purpose: CloudSpendPurpose, meetingID: MeetingID?,
         expectStructuredOutput: Bool = false,
         requiresStructuredOutput: Bool = false
     ) async throws -> String {
         let outcome: SubprocessOutcomeLike
         do {
-            outcome = try await runner(binary, args, env, stdin)
+            outcome = try await runner(binary, args, env, stdin, timeout)
         } catch let error as EngineError {
             throw error
         } catch {
@@ -627,6 +630,23 @@ public actor ClaudeCodeSummarizationEngine: SummarizationEngine, NotesEditingEng
 
     static func stderrExcerpt(_ s: String) -> String {
         String(s.suffix(600))
+    }
+
+    // MARK: - Timecode anchoring
+
+    public func anchorTimecodes(
+        meetingID: MeetingID, purpose: CloudSpendPurpose,
+        prepare: @escaping @Sendable () async throws -> TimecodeAnchoring.Prompt?
+    ) async throws -> TimecodeAnchoring.Answer? {
+        try await chain.run {
+            guard let prompt = try await prepare() else { return nil }
+            let response = try await self.invoke(
+                system: TimecodeAnchoring.systemPrompt, user: prompt.userMessage,
+                purpose: purpose, meetingID: meetingID,
+                jsonSchema: TimecodeAnchoring.schemaJSON, editorMode: true,
+                timeout: TimecodeAnchoring.callTimeout)
+            return TimecodeAnchoring.Answer(prompt: prompt, response: response)
+        }
     }
 
     // MARK: - Notes generation

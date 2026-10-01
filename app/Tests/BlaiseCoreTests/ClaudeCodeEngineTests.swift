@@ -18,6 +18,7 @@ private struct CPInvocation: Sendable {
     let env: [String: String]
     let stdin: Data?
     let systemPrompt: String?
+    let timeout: TimeInterval
 }
 
 private typealias CPResponse = ClaudeCodeSummarizationEngine.SubprocessOutcomeLike
@@ -153,7 +154,7 @@ private func makeCPHarness(
     let ledger = CloudSpendLedger(database: database)
     let invocations = Recorder<CPInvocation>()
     let counter = Recorder<Int>()
-    let runner: ClaudeCodeSummarizationEngine.CommandRunner = { executable, args, env, stdin in
+    let runner: ClaudeCodeSummarizationEngine.CommandRunner = { executable, args, env, stdin, timeout in
         let systemPrompt: String? = {
             guard let flag = args.firstIndex(of: "--system-prompt-file"),
                 args.indices.contains(args.index(after: flag))
@@ -162,7 +163,7 @@ private func makeCPHarness(
         }()
         invocations.append(CPInvocation(
             executable: executable, args: args, env: env, stdin: stdin,
-            systemPrompt: systemPrompt))
+            systemPrompt: systemPrompt, timeout: timeout))
         counter.append(1)
         let index = min(counter.values.count - 1, responses.count - 1)
         return responses[index]
