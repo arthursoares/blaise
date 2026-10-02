@@ -3,6 +3,43 @@
     <channel>
         <title>Blaise</title>
         <item>
+            <title>1.10.0</title>
+            <pubDate>Fri, 02 Oct 2026 10:25:17 -0300</pubDate>
+            <link>https://github.com/ricardojustus/blaise/releases/tag/v1.10.0</link>
+            <sparkle:version>588</sparkle:version>
+            <sparkle:shortVersionString>1.10.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.6.1</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Blaise 1.10.0: timecode links, backups, a Claude connector, and notes language
+
+Four features in one release. Your meetings, transcripts, notes and settings carry over untouched; the library gets
+one new table for the timecode links on first launch.
+
+## What changed
+
+- **Timecode links.** Hover an item in the notes (a paragraph, a decision or an action item) and a small play mark
+  appears beside it. Click it and the recording plays from 3 seconds before that moment; click again to pause. The
+  notes don't scroll and nothing gets selected. Right-click a paragraph for "Play from m:ss", and VoiceOver reads
+  each mark as a button. New notes get their marks automatically, through one extra call on the Claude subscription
+  engine. "Generate Timestamps" adds them to a meeting from before this version. Turn it off with "Link notes to the
+  recording" in Settings.
+- **Backups.** A new Backup tab. Pick a folder, and Blaise backs up your library there every day. Encryption is
+  optional: Blaise generates the password, shows it once (copy or print it), and keeps it in your login Keychain.
+  Restore any backup from the same tab; your current library is set aside, not deleted.
+- **Connect to Claude.** "Connect to Claude…" sets up a read-only connector so Claude Desktop and Claude Code can
+  search your meetings and read their notes, action items and transcripts. It never changes anything in Blaise.
+- **Notes language.** Choose Auto, English or Portuguese for your notes. It applies to new notes and to notes you
+  regenerate yourself; existing notes are never rewritten in bulk.
+- **Upgrading from 1.9.2:** delivered in place by the updater.
+
+## Assets
+
+- `Blaise-1.10.0.zip`: the notarised, stapled app (macOS 15.6.1+, Apple Silicon)
+- `blaise-meet-extension.zip`: the Chrome extension for Google Meet participant/speaker signals (unchanged)
+]]></description>
+            <enclosure url="https://github.com/ricardojustus/blaise/releases/download/v1.10.0/Blaise-1.10.0.zip" length="34824383" type="application/octet-stream" sparkle:edSignature="xjrrDl8A+/sIYRywVPli4vRdlavbojtYGJoTe8eeC0iU3ow6YUZesr7PYiypnJjikQhoshYXMyRDwXQAuZDqCQ=="/>
+        </item>
+        <item>
             <title>1.9.2</title>
             <pubDate>Tue, 29 Sep 2026 22:51:37 -0300</pubDate>
             <link>https://github.com/ricardojustus/blaise/releases/tag/v1.9.2</link>
@@ -68,46 +105,6 @@ The Claude subscription engine now writes your notes and memory digest with Sonn
 - `blaise-meet-extension.zip`: the Chrome extension for Google Meet participant/speaker signals (unchanged)
 ]]></description>
             <enclosure url="https://github.com/ricardojustus/blaise/releases/download/v1.9.1/Blaise-1.9.1.zip" length="32638391" type="application/octet-stream" sparkle:edSignature="NN3G15Ey4v6MCLe/kNXAgQP7uRxps93e8eQgo+SUVReJls+2Ylh41K1mW1Ls0A6vZTplYCpr/08w5GJ4tQ48Dg=="/>
-        </item>
-        <item>
-            <title>1.9.0</title>
-            <pubDate>Sun, 27 Sep 2026 23:56:45 -0300</pubDate>
-            <link>https://github.com/ricardojustus/blaise/releases/tag/v1.9.0</link>
-            <sparkle:version>383</sparkle:version>
-            <sparkle:shortVersionString>1.9.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>15.6.1</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Blaise 1.9.0 — no more silent mic-only recordings
-
-If macOS ever records your microphone but not the other side of the call, Blaise now tells
-you while the meeting is still going, instead of leaving you to find out afterwards.
-Contributed by Arthur Soares (@arthursoares) in #15.
-
-## What changed
-
-- **Missing call audio is visible.** An orange banner in the main window, a card in the
-  menu-bar menu and one notification (no sound) per episode. Quiet calls are fine: silence
-  still counts as audio arriving.
-- **Blaise tries to fix it.** Two automatic repairs, then a **Retry Call Audio** button and a
-  shortcut to the audio permission settings. If a repair keeps failing while call audio is
-  already missing, Blaise keeps recording your microphone instead of stopping.
-- **The meeting remembers.** Affected meetings are marked **Capture incomplete** in the
-  library, and the note survives reprocessing, because audio that was never captured cannot
-  come back.
-- **A start-of-recording bug is fixed.** A disk write failure in the first moments of a
-  recording could leave it looking live while nothing was saved. It now stops and keeps
-  what exists, like any other write failure.
-- **Upgrading from 1.8.0:** delivered in place by the updater. Meetings, transcripts, notes
-  and settings untouched.
-
-## Assets
-
-- `Blaise-1.9.0.zip` — the notarised, stapled app (macOS 15.6.1+, Apple Silicon;
-  fully tested on macOS 26 and 27)
-- `blaise-meet-extension.zip` — the Chrome extension for Google Meet
-  participant/speaker signals (unchanged)
-]]></description>
-            <enclosure url="https://github.com/ricardojustus/blaise/releases/download/v1.9.0/Blaise-1.9.0.zip" length="32663330" type="application/octet-stream" sparkle:edSignature="VHk8caM0c0pNm0ibNKEHNV+ddtx/pUdUM76w4nZ2dTPiR+4GN8kDf1TMBjAO6/bV3QZSFUCRui0PSWdNHxxFDA=="/>
         </item>
     </channel>
 </rss>
