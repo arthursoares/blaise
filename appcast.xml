@@ -3,6 +3,40 @@
     <channel>
         <title>Blaise</title>
         <item>
+            <title>1.10.1</title>
+            <pubDate>Sun, 04 Oct 2026 02:01:58 -0300</pubDate>
+            <link>https://github.com/ricardojustus/blaise/releases/tag/v1.10.1</link>
+            <sparkle:version>601</sparkle:version>
+            <sparkle:shortVersionString>1.10.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.6.1</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Blaise 1.10.1: your voice stays in playback after the Mac sleeps
+
+A fix release. Your meetings, transcripts, notes and settings carry over untouched, and nothing needs reprocessing.
+
+## What changed
+
+- **Playback after a sleep.** If the Mac went to sleep during a recording (closing the lid, for example), playback
+  could drop your own microphone track, and the timecode marks on the things you said disappeared from the notes.
+  Nothing was lost: both tracks were always on disk. Blaise now plays both, so your voice and those timecodes come
+  back, including on meetings recorded before this version.
+- **Reprocess All shows the real cost.** The confirmation used to price every meeting at the metered API rate, even
+  with the Claude subscription engine or a local engine selected, and could cap how many meetings it queued because
+  of that. It now uses the cost of the engine you selected.
+- **Google Calendar sign-in.** The sign-in page escapes any error text it shows, and an interrupted sign-in releases
+  its temporary local port straight away.
+- **For contributors:** the sharded test runner stops when the test build fails instead of reporting the previous
+  build's results, and the test scripts run in a fixed time zone so date tests pass anywhere.
+- **Upgrading from 1.10.0:** delivered in place by the updater.
+
+## Assets
+
+- `Blaise-1.10.1.zip`: the notarised, stapled app (macOS 15.6.1+, Apple Silicon)
+- `blaise-meet-extension.zip`: the Chrome extension for Google Meet participant/speaker signals (unchanged)
+]]></description>
+            <enclosure url="https://github.com/ricardojustus/blaise/releases/download/v1.10.1/Blaise-1.10.1.zip" length="34799730" type="application/octet-stream" sparkle:edSignature="bxlqWi9JEHbTXiU20G9ssu6GSiPbR8gLCtTkv0tdUH68CQ54STJaSaMsakoKjiDqrkfzOAo/ImJ8r07UAYBBDQ=="/>
+        </item>
+        <item>
             <title>1.10.0</title>
             <pubDate>Fri, 02 Oct 2026 10:25:17 -0300</pubDate>
             <link>https://github.com/ricardojustus/blaise/releases/tag/v1.10.0</link>
@@ -74,37 +108,6 @@ now work on a selection that spans several paragraphs.
 - `blaise-meet-extension.zip`: the Chrome extension for Google Meet participant/speaker signals (unchanged)
 ]]></description>
             <enclosure url="https://github.com/ricardojustus/blaise/releases/download/v1.9.2/Blaise-1.9.2.zip" length="32672094" type="application/octet-stream" sparkle:edSignature="/FXSsZgL7mnmiKe4Ta6gp0S993R/kSy4V3hKTtI4/9HjXNZ9SQnRCwq1p4F2YfDhzgwqbpQ0Rp9+q9s8SHUyAw=="/>
-        </item>
-        <item>
-            <title>1.9.1</title>
-            <pubDate>Mon, 28 Sep 2026 22:25:12 -0300</pubDate>
-            <link>https://github.com/ricardojustus/blaise/releases/tag/v1.9.1</link>
-            <sparkle:version>388</sparkle:version>
-            <sparkle:shortVersionString>1.9.1</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>15.6.1</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Blaise 1.9.1: notes on Sonnet 5.5
-
-The Claude subscription engine now writes your notes and memory digest with Sonnet 5.5.
-
-## What changed
-
-- **Sonnet 5.5 for the subscription engine.** In side-by-side tests on real meetings, 5.5 wrote more accurate notes
-  and digests than 4.6 (fewer wrong names, dates and superseded decisions kept as if still decided) and finished in
-  about half the time. The API engine stays on Sonnet 4.6.
-- **Room for long meetings.** The engine's output limit goes up to 32,000 tokens, so the digest of a two-hour meeting
-  is no longer cut short.
-- **Your own commitments land in your action items.** A new notes prompt version, c6-v1.2, treats anything you say
-  you will do yourself ("I'll…", "vou…") as your action item, even when you say it in passing. It is the new default
-  for every engine; the earlier versions stay selectable.
-- **Upgrading from 1.9.0:** delivered in place by the updater. Meetings, transcripts, notes and settings untouched.
-
-## Assets
-
-- `Blaise-1.9.1.zip`: the notarised, stapled app (macOS 15.6.1+, Apple Silicon)
-- `blaise-meet-extension.zip`: the Chrome extension for Google Meet participant/speaker signals (unchanged)
-]]></description>
-            <enclosure url="https://github.com/ricardojustus/blaise/releases/download/v1.9.1/Blaise-1.9.1.zip" length="32638391" type="application/octet-stream" sparkle:edSignature="NN3G15Ey4v6MCLe/kNXAgQP7uRxps93e8eQgo+SUVReJls+2Ylh41K1mW1Ls0A6vZTplYCpr/08w5GJ4tQ48Dg=="/>
         </item>
     </channel>
 </rss>
