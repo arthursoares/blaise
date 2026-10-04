@@ -4,6 +4,10 @@
 # paths SwiftPM would normally derive through xcrun (blocked by the Xcode
 # license wall).
 set -euo pipefail
+# Date-rendering tests format fixed instants in the current zone; a pinned zone
+# keeps them deterministic on any contributor's machine. Not UTC: a non-zero
+# offset still exposes code that confuses local time with UTC.
+export TZ=Asia/Tokyo
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/env.sh

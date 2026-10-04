@@ -23,4 +23,11 @@ struct GoogleCalendarPKCETests {
         #expect(!challenge.contains("+"))
         #expect(!challenge.contains("/"))
     }
+
+    @Test("a callback error echoed into the loopback page is not markup")
+    func loopbackPageEscapesCallbackError() {
+        let escaped = htmlEscaped("<script>alert(1)</script> & co")
+        #expect(escaped == "&lt;script&gt;alert(1)&lt;/script&gt; &amp; co")
+        #expect(htmlEscaped("access_denied") == "access_denied")
+    }
 }

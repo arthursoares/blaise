@@ -323,7 +323,7 @@ public enum CaptureStitcher {
     /// a faithful clock. Stretching each track's file duration onto this span
     /// places both on one real-time axis (per-track playback anchor). `nil`
     /// when the part has no closed row (open/derived) — the player then cannot
-    /// trust the cross-track alignment and falls back to single-track playback.
+    /// trust the cross-track scale and plays the unity fallback.
     public struct PlannedPart: Sendable, Equatable {
         public var index: Int
         public var offsetMs: Int64?
@@ -394,7 +394,7 @@ public enum CaptureStitcher {
                 // True recorded span of this part — the real-time axis both
                 // tracks are scaled onto for playback. Only a CLOSED row
                 // (endedAtMs present and after start) carries it; an open or
-                // zero-length row leaves it nil (single-track fallback).
+                // zero-length row leaves it nil (unity fallback).
                 if let endedAtMs = row.endedAtMs, endedAtMs > row.startedAtMs {
                     wallSpanMs = endedAtMs - row.startedAtMs
                 }

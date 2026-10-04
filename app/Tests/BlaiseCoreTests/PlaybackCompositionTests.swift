@@ -76,7 +76,7 @@ struct PlaybackPlacementTests {
         // duration (here ~3.2×, far above the 1.18 band ceiling) is NOT genuine
         // clock drift — it is a corrupt/derived span. The planner must distrust
         // it: unity scale, scaleKnown false, so the multi-track trust gate drops
-        // to single-track playback rather than stretching the file 3×.
+        // to the unity fallback rather than stretching the file 3×.
         let parts = [
             CaptureStitcher.PlannedPart(
                 index: 1, offsetMs: 0, wallSpanMs: 5_000_000,  // 5000 s span...
@@ -86,6 +86,62 @@ struct PlaybackPlacementTests {
         let placements = CaptureStitcher.playbackPlacements(parts: parts, durations: durations)
         #expect(placements.allSatisfy { $0.timeScale == 1.0 && !$0.scaleKnown })
         #expect(!CaptureStitcher.playbackScalingTrustworthy(placements: placements))
+    }
+
+    @Test("a recording that spanned a sleep: equal-length tracks keep BOTH at unity, mic timecodes map")
+    func sleepSpanKeepsBothTracks() {
+        // The Mac slept mid-recording: the part's wall-clock span (2400 s)
+        // includes the sleep, the two files (1600 s each) do not, so the
+        // scale is distrusted. Both files came from one capture graph and are
+        // the same length, so they are still in sync with each other.
+        let parts = [
+            CaptureStitcher.PlannedPart(
+                index: 1, offsetMs: 0, wallSpanMs: 2_400_000,
+                systemM4A: sysURL(1), micM4A: micURL(1))
+        ]
+        let durations = [sysURL(1): 1600.0, micURL(1): 1600.0]
+        let resolved = CaptureStitcher.playbackPlacements(parts: parts, durations: durations)
+        #expect(!CaptureStitcher.playbackScalingTrustworthy(placements: resolved))
+
+        let fallback = CaptureStitcher.untrustedFallbackPlacements(
+            resolved, parts: parts, durations: durations)
+        #expect(Set(fallback.map(\.track)) == [.system, .mic])
+        #expect(fallback.allSatisfy { $0.timeScale == 1.0 && $0.startSeconds == 0 })
+        let micSeconds = CaptureStitcher.playbackSeconds(
+            transcriptSeconds: 600, track: .mic, parts: parts, durations: durations,
+            placements: fallback)
+        #expect(micSeconds == 600, "a note's timecode on the user's own speech still maps")
+    }
+
+    @Test("drifted or incomplete tracks with an untrusted scale still fall back to the system track alone")
+    func untrustedDriftKeepsSystemOnly() {
+        // Different file lengths (the 1.088× converter drift, no closed span):
+        // their relative sync is unknown, so the mic is dropped as before.
+        let drifted = [
+            CaptureStitcher.PlannedPart(
+                index: 1, offsetMs: 0, systemM4A: sysURL(1), micM4A: micURL(1))
+        ]
+        let driftedDurations = [sysURL(1): 1578.304, micURL(1): 1717.824]
+        let fallback = CaptureStitcher.untrustedFallbackPlacements(
+            CaptureStitcher.playbackPlacements(parts: drifted, durations: driftedDurations),
+            parts: drifted, durations: driftedDurations)
+        #expect(fallback.map(\.track) == [.system])
+        #expect(CaptureStitcher.playbackSeconds(
+            transcriptSeconds: 600, track: .mic, parts: drifted, durations: driftedDurations,
+            placements: fallback) == nil)
+
+        // A later part that lost its mic cannot be shown to be in lockstep.
+        let partial = [
+            CaptureStitcher.PlannedPart(
+                index: 1, offsetMs: 0, systemM4A: sysURL(1), micM4A: micURL(1)),
+            CaptureStitcher.PlannedPart(
+                index: 2, offsetMs: 700_000, systemM4A: sysURL(2), micM4A: nil),
+        ]
+        let partialDurations = [sysURL(1): 600.0, micURL(1): 600.0, sysURL(2): 300.0]
+        let partialFallback = CaptureStitcher.untrustedFallbackPlacements(
+            CaptureStitcher.playbackPlacements(parts: partial, durations: partialDurations),
+            parts: partial, durations: partialDurations)
+        #expect(partialFallback.map(\.track) == [.system, .system])
     }
 
     @Test("L-4: the real ±8.8% drift stays comfortably inside the sanity band (trusted)")
@@ -111,7 +167,7 @@ struct PlaybackPlacementTests {
     func singlePartNoSpanUntrusted() {
         // Without a closed part row (wallSpanMs nil) the cross-track drift is
         // unknown: unity scale, scaleKnown false, and the trust gate refuses
-        // to mix both tracks (single-track fallback at the call site).
+        // to mix both tracks at their scales (unity fallback at the call site).
         let parts = [
             CaptureStitcher.PlannedPart(
                 index: 1, offsetMs: 0, systemM4A: sysURL(1), micM4A: micURL(1))

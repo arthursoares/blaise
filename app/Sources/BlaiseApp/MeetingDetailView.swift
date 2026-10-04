@@ -2650,7 +2650,7 @@ struct AudioPlayerView: View {
     /// system-only fallback, which would drop the user's mic for the view's
     /// whole lifetime — `load(asset:)` only ever attaches the first asset). On
     /// `.unreadable` (every retained file unreadable) the transport stays
-    /// disabled and shows the honest read-error message (M-3).
+    /// disabled and shows the honest read-error message.
     @State private var resolution: PlaybackResolution = .resolving
     /// System-track attenuation mix (M-2), built with the composition. Applied
     /// to the player item so the user's mic is not buried under the other side.
@@ -2750,9 +2750,8 @@ struct AudioPlayerView: View {
                     // real-time scale on every part. If it is missing anywhere
                     // (open/derived part, unreadable file) the two tracks would
                     // drift apart on playback — out-of-sync is worse than a
-                    // missing track (the user, 2026-06-12). Fall back to the system
-                    // track alone (the user's mic survives in the transcript and
-                    // notes), at unity.
+                    // missing track. Fall back at unity: both tracks when they
+                    // were written in lockstep, else the system track alone.
                     let trustworthy = CaptureStitcher.playbackScalingTrustworthy(
                         placements: resolved)
                     let placements: [CaptureStitcher.PlaybackPlacement]
@@ -2762,22 +2761,17 @@ struct AudioPlayerView: View {
                     } else if trustworthy {
                         placements = resolved
                     } else {
+                        placements = CaptureStitcher.untrustedFallbackPlacements(
+                            resolved, parts: parts, durations: durations)
                         Self.logger.warning(
-                            "playback scale untrusted for \(meetingID, privacy: .public); single-track fallback")
-                        let system = resolved.filter { $0.track == .system }
-                        placements = (system.isEmpty ? resolved : system).map {
-                            // Unity scale: a track without a trustworthy span
-                            // plays at its own length rather than a guessed one.
-                            CaptureStitcher.PlaybackPlacement(
-                                track: $0.track, url: $0.url, startSeconds: $0.startSeconds)
-                        }
+                            "playback scale untrusted for \(meetingID, privacy: .public); unity fallback with \(Set(placements.map(\.track)).count, privacy: .public) track(s)")
                     }
                     let (asset, audioMix, inserted) = await Self.composition(
                         for: placements, durations: durations)
                     let anyReadable = !inserted.isEmpty
                     mixedAsset = asset
                     mixedAudioMix = audioMix
-                    // Honest failure (M-3): an empty composition (every file
+                    // Honest failure: an empty composition (every file
                     // unreadable) never resolves to `.failed` on its own — an
                     // AVPlayerItem over an empty composition stays `.unknown`
                     // forever. Surface the read-error state from the resolved
@@ -2814,7 +2808,7 @@ struct AudioPlayerView: View {
                     in: RoundedRectangle(cornerRadius: 10))
                 // Honest transport: disabled while the plan is still resolving
                 // (M-1: no fallback play before the mixed asset exists), when
-                // the resolved plan has nothing readable (M-3), or if the player
+                // the resolved plan has nothing readable, or if the player
                 // item later fails (corrupt m4a — the atomic encode makes a
                 // PARTIAL file unreachable). Never pretends to play.
                 .disabled(resolution != .ready || controller.failed)
@@ -2891,7 +2885,7 @@ struct AudioPlayerView: View {
     /// file duration onto the part's wall-clock span, so the system (other
     /// side) and mic (the user's own voice) play together on one real-time
     /// axis — the 2026-06-12 sync fix. A single placement (imported meeting, or
-    /// the untrusted-scale single-track fallback) yields a one-track
+    /// an untrusted scale on a pair that is not in lockstep) yields a one-track
     /// composition at unity. Once both tracks are scaled to wall-clock their
     /// real durations match the recorded span; the composition's duration is
     /// the latest end, so playback reaches the user's trailing speech.
@@ -2906,7 +2900,7 @@ struct AudioPlayerView: View {
     /// inserted; it is empty when EVERY file was skipped (empty composition):
     /// an AVPlayerItem over an empty composition never resolves to `.failed`
     /// (it stays `.unknown` forever), so the caller keys the honest read-error
-    /// state on it, not on item status (M-3). Timecode marks map through it.
+    /// state on it, not on item status. Timecode marks map through it.
     ///
     /// Pitch correction (2026-06-12): a `scaleTimeRange`-drifted track is
     /// rendered with PER-TRACK `audioTimePitchAlgorithm = .varispeed` (set on
@@ -2958,7 +2952,7 @@ struct AudioPlayerView: View {
             // clocks drift, so a file's own duration is NOT real time. Stretch
             // the inserted segment from its file duration onto the part's
             // wall-clock span (`timeScale`), putting both tracks on one
-            // real-time axis. scaleKnown==false keeps unity (single-track
+            // real-time axis. scaleKnown==false keeps unity (the untrusted
             // fallback path), so this is a no-op there. A scaled track is
             // rendered with `.varispeed` (below) so the stretch also corrects
             // the baked-in pitch drift.

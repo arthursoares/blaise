@@ -384,6 +384,9 @@ actor GoogleCalendarClient {
         let codeChallenge = Self.codeChallenge(for: codeVerifier)
         let receiver = try GoogleOAuthLoopbackReceiver(state: state)
         let redirectURI = try await receiver.start()
+        // Any early exit (cancel, browser refused) must not leave the loopback
+        // port bound; after a completed callback the listener is already closed.
+        defer { receiver.stop() }
 
         var components = URLComponents(url: Self.authEndpoint, resolvingAgainstBaseURL: false)!
         components.queryItems = [
@@ -636,6 +639,14 @@ actor GoogleCalendarClient {
     }
 }
 
+/// Text placed in the loopback page's HTML; the callback's `error` parameter
+/// reaches it, so it must not be interpreted as markup.
+func htmlEscaped(_ text: String) -> String {
+    text.replacingOccurrences(of: "&", with: "&amp;")
+        .replacingOccurrences(of: "<", with: "&lt;")
+        .replacingOccurrences(of: ">", with: "&gt;")
+}
+
 private final class GoogleOAuthLoopbackReceiver: @unchecked Sendable {
     private static let callbackPath = "/oauth/google-calendar"
 
@@ -797,9 +808,13 @@ private final class GoogleOAuthLoopbackReceiver: @unchecked Sendable {
         return .success(code)
     }
 
+    func stop() {
+        listener.cancel()
+    }
+
     private func respond(_ connection: NWConnection, status: String, body: String) {
         let html = """
-            <!doctype html><meta charset="utf-8"><title>Blaise</title><body style="font:14px -apple-system;margin:32px">\(body)</body>
+            <!doctype html><meta charset="utf-8"><title>Blaise</title><body style="font:14px -apple-system;margin:32px">\(htmlEscaped(body))</body>
             """
         let bodyData = Data(html.utf8)
         var response = Data(

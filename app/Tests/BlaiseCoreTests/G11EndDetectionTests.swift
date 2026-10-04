@@ -457,7 +457,7 @@ struct UpcomingMeetingsTests {
         let later = event(id: "evt-later", title: "This afternoon", startHour: 15, endHour: 16,
             link: "meet.google.com/abc-defg-hij")
         let rows = UpcomingMeetings.rows(
-            from: [past, nowish, later], now: noonSP)
+            from: [past, nowish, later], now: noonSP, calendar: spCal)
         #expect(rows.map(\.eventIdentifier) == ["evt-now", "evt-later"], "the 09–10 meeting has ended")
         // A meeting with no Meet link still surfaces.
         #expect(rows.contains { $0.eventIdentifier == "evt-now" && $0.meetingCode == nil })
@@ -468,7 +468,7 @@ struct UpcomingMeetingsTests {
         let later = event(id: "evt-later", title: "Afternoon", startHour: 15, endHour: 16,
             link: "meet.google.com/abc-defg-hij")
         let rows = UpcomingMeetings.rows(
-            from: [later], now: noonSP, recordedCodes: ["abc-defg-hij"])
+            from: [later], now: noonSP, recordedCodes: ["abc-defg-hij"], calendar: spCal)
         #expect(rows.isEmpty, "an already-recorded code's row disappears")
     }
 
@@ -477,7 +477,7 @@ struct UpcomingMeetingsTests {
         let later = event(id: "evt-later", title: "Afternoon", startHour: 15, endHour: 16,
             link: "meet.google.com/abc-defg-hij")
         let row = try! #require(
-            UpcomingMeetings.rows(from: [later], now: noonSP).first)
+            UpcomingMeetings.rows(from: [later], now: noonSP, calendar: spCal).first)
         #expect(row.anchor.eventIdentifier == "evt-later")
         #expect(row.anchor.scheduledEnd == later.end)
         #expect(row.offersLaunchAndRecord, "a Meet-linked row also offers Launch & Record")
@@ -490,7 +490,7 @@ struct UpcomingMeetingsTests {
             attendees: [.init(name: "Me", email: "me@example.test"),
                 .init(name: "Robin Cole", email: "robin@example.test")])
         let row = try! #require(
-            UpcomingMeetings.rows(from: [m], now: noonSP).first)
+            UpcomingMeetings.rows(from: [m], now: noonSP, calendar: spCal).first)
         // The user is kept: this list is persisted when the row starts a
         // recording, and the counting rule subtracts him structurally.
         #expect(row.attendeeCount == 2)
@@ -501,13 +501,14 @@ struct UpcomingMeetingsTests {
     @Test("day-rollover trigger fires across a calendar-day boundary")
     func dayRollover() {
         let yesterdayNoon = spCal.date(byAdding: .day, value: -1, to: noonSP)!
-        #expect(UpcomingMeetings.dayChanged(from: yesterdayNoon, to: noonSP))
-        #expect(!UpcomingMeetings.dayChanged(from: noonSP, to: noonSP.addingTimeInterval(3600)))
+        #expect(UpcomingMeetings.dayChanged(from: yesterdayNoon, to: noonSP, calendar: spCal))
+        #expect(!UpcomingMeetings.dayChanged(
+            from: noonSP, to: noonSP.addingTimeInterval(3600), calendar: spCal))
     }
 
     @Test("empty input → empty list (the section collapses, no chrome)")
     func emptyCollapses() {
-        #expect(UpcomingMeetings.rows(from: [], now: noonSP).isEmpty)
+        #expect(UpcomingMeetings.rows(from: [], now: noonSP, calendar: spCal).isEmpty)
     }
 }
 

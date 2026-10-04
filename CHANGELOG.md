@@ -2,6 +2,18 @@
 
 All notable changes to Blaise are documented here. Dates are DD/MM/YYYY.
 
+## [1.10.1] — 04/10/2026
+
+Fixes: playback after the Mac sleeps mid-recording, and the Reprocess All cost.
+
+### Fixed
+- **Playback after a sleep.** A recording that spanned a sleep could play without your microphone track, and the
+  timecode marks on your own speech went missing. Both tracks now play; older meetings are fixed too.
+- **Reprocess All cost.** Priced by the selected engine instead of the metered API rate, so a free engine is no
+  longer shown a cost or capped.
+- **Google Calendar sign-in.** The local sign-in page escapes error text, and an interrupted sign-in frees its port.
+- **Tests.** The sharded runner stops on a failed test build; test scripts run in a fixed time zone.
+
 ## [1.10.0] — 01/10/2026
 
 Four features: notes language, a Claude connector, backups, and timecode links.

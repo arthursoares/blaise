@@ -39,9 +39,12 @@ public struct ReprocessAllPlan: Sendable, Equatable {
 }
 
 public enum ReprocessAllPlanner {
-    /// Per-meeting cost estimate for the dialog (mirrors
-    /// `ClaudeSummarizationEngine.costDescriptor.estimatedPerMeetingUSD`).
-    public static let defaultPerMeetingUSD = 0.074
+    /// Per-meeting cost estimate for the dialog: the engine's own estimate. An
+    /// engine that declares none is local and free; a run that falls back to a
+    /// metered engine is still bounded by the ledger's per-call ceiling gate.
+    public static func perMeetingUSD(for engine: any SummarizationEngine) -> Double {
+        engine.costDescriptor?.estimatedPerMeetingUSD ?? 0
+    }
 
     /// Build the plan from the catalog (`ready` meetings) + the ledger.
     public static func plan(

@@ -35,7 +35,7 @@ extension CaptureStitcher {
     /// 1.088 and its inverse ≈ 0.919 — so a scale well outside this band is a
     /// pathological part row (a derived-close span far from the file's true
     /// length), not drift; such a row is distrusted (unity + `scaleKnown` false),
-    /// dropping a multi-track meeting to single-track playback rather than
+    /// dropping a multi-track meeting to the unity fallback rather than
     /// stretching audio to an absurd duration. The band has comfortable margin
     /// around the ±8.8% real drift.
     public static let timeScaleSanityBand: ClosedRange<Double> = 0.85...1.18
@@ -68,9 +68,8 @@ extension CaptureStitcher {
     ///   no inserted gap.
     ///
     /// When a part has no closed row (`wallSpanMs == nil`) or a file's duration
-    /// is unknown, the cross-track scale cannot be trusted; the caller drops to
-    /// single-track playback (the user's rule: out-of-sync is worse than one track),
-    /// gated by `playbackScalingTrustworthy`.
+    /// is unknown, the cross-track scale cannot be trusted; the caller plays
+    /// `untrustedFallbackPlacements` instead, gated by `playbackScalingTrustworthy`.
     public struct PlaybackPlacement: Sendable, Equatable {
         public let track: CaptureTrack
         public let url: URL
@@ -135,7 +134,7 @@ extension CaptureStitcher {
                 // Stretch this track's file onto the part's real-time span so
                 // both tracks share one wall-clock axis. Only with a known span
                 // AND a readable, positive file duration; otherwise unity (the
-                // single-track-fallback gate keeps a drifted pair from playing).
+                // unity fallback keeps a drifted pair from being mixed).
                 let timeScale: Double
                 let realDuration: Double
                 let scaleKnown: Bool
@@ -148,7 +147,7 @@ extension CaptureStitcher {
                     // A scale OUTSIDE [0.85, 1.18] means a pathological closed row
                     // (e.g. a derived-close span far from the file's real length),
                     // not genuine clock drift — distrust it (unity + scaleKnown
-                    // false) so the multi-track gate drops to single-track rather
+                    // false) so the multi-track gate drops to the unity fallback rather
                     // than stretching a track to an absurd duration.
                     timeScale = candidate
                     realDuration = Double(wallSpanMs) / 1000.0
@@ -210,8 +209,8 @@ extension CaptureStitcher {
     /// a closed wall-clock span and every placed file a readable duration; if
     /// any is missing, the tracks' relative drift is unknown and mixing them
     /// risks the out-of-sync playback the user reported. In that case the caller
-    /// plays a single track instead (the user's rule: out-of-sync is worse than a
-    /// missing track). A single-track plan (one file, e.g. imported or a
+    /// plays `untrustedFallbackPlacements` (out-of-sync is worse than a missing
+    /// track). A single-track plan (one file, e.g. imported or a
     /// system-only capture) is always trustworthy — there is nothing to
     /// mis-align against.
     public static func playbackScalingTrustworthy(
@@ -223,5 +222,28 @@ extension CaptureStitcher {
         // missing span (open/derived part, unreadable file) makes the tracks'
         // relative drift unknown and mixing them risks the out-of-sync playback.
         return placements.allSatisfy(\.scaleKnown)
+    }
+
+    /// What to play when `playbackScalingTrustworthy` is false, at unity scale.
+    /// If every part has both files and their durations match, one capture graph
+    /// wrote them in lockstep, so they stay in sync with each other even though
+    /// the wall-clock scale is unknown (e.g. a recording that spanned a sleep):
+    /// play both, so the user's own voice is not dropped. Otherwise the system
+    /// track alone (out-of-sync is worse than a missing track).
+    public static func untrustedFallbackPlacements(
+        _ resolved: [PlaybackPlacement], parts: [PlannedPart], durations: [URL: Double]
+    ) -> [PlaybackPlacement] {
+        let lockstep = !parts.isEmpty && parts.allSatisfy { part in
+            guard let system = part.systemM4A, let mic = part.micM4A,
+                let systemSeconds = durations[system], let micSeconds = durations[mic],
+                systemSeconds > 0
+            else { return false }
+            return abs(systemSeconds - micSeconds) <= 0.05
+        }
+        let system = resolved.filter { $0.track == .system }
+        let kept = lockstep || system.isEmpty ? resolved : system
+        return kept.map {
+            PlaybackPlacement(track: $0.track, url: $0.url, startSeconds: $0.startSeconds)
+        }
     }
 }

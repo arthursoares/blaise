@@ -42,6 +42,37 @@ import Testing
         #expect(p.cappedCount == 3)
         #expect(!p.wasCapped)
     }
+
+    /// The dialog prices by the selected engine, not the metered-API rate: the
+    /// account engine and the local engine are free, so they are never capped
+    /// (`freeCostEnqueuesEverything`).
+    @Test func perMeetingCostFollowsTheSelectedEngine() async throws {
+        let database = try makeDatabase()
+        let settings = SettingsStore(database: database)
+        let ledger = CloudSpendLedger(database: database)
+        func configuration(_ id: String, _ descriptors: [EngineConfigDescriptor]) -> EngineConfiguration {
+            EngineConfiguration(
+                engineID: id, descriptors: descriptors, settings: settings, secrets: InMemorySecretStore())
+        }
+        let api = ClaudeSummarizationEngine(
+            configuration: configuration(ClaudeSummarizationEngine.engineID, ClaudeSummarizationEngine.descriptors),
+            ledger: ledger)
+        let account = ClaudeCodeSummarizationEngine(
+            configuration: configuration(
+                ClaudeCodeSummarizationEngine.engineID, ClaudeCodeSummarizationEngine.descriptors),
+            ledger: ledger)
+        let root = try makeTempRoot()
+        let local = MLXSummarizationEngine(
+            configuration: configuration(MLXSummarizationEngine.engineID, MLXSummarizationEngine.descriptors),
+            dataRoot: root, uvBinary: root.appendingPathComponent("uv"),
+            driverScript: root.appendingPathComponent("driver.py"),
+            requirementsFile: root.appendingPathComponent("requirements.txt"),
+            sweepOrphansOnInit: false, modelFetchOverride: nil, driverTimeoutOverride: nil)
+
+        #expect(ReprocessAllPlanner.perMeetingUSD(for: api) == 0.074)
+        #expect(ReprocessAllPlanner.perMeetingUSD(for: account) == 0)
+        #expect(ReprocessAllPlanner.perMeetingUSD(for: local) == 0)
+    }
 }
 
 /// F1 Inc2 — repository retry (AC4) + CAS-guarded pending cancel (AC3/C2).

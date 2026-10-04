@@ -11,6 +11,10 @@
 # runtime (auto-adapts as suites are added) and partitioned round-robin into N shards.
 # CI calls this instead of `test.sh` for the swift suite.
 set -uo pipefail
+# Date-rendering tests format fixed instants in the current zone; a pinned zone
+# keeps them deterministic on any contributor's machine. Not UTC: a non-zero
+# offset still exposes code that confuses local time with UTC.
+export TZ=Asia/Tokyo
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/env.sh
 source "$ROOT/scripts/env.sh"
@@ -25,7 +29,9 @@ FLAGS=(
 )
 
 echo "building test bundle…"
-"$SWIFT" build --build-tests "${FLAGS[@]}"
+# Without -e, a failed build would fall through to --skip-build and run the
+# previous test binary, reporting results for code that does not compile.
+"$SWIFT" build --build-tests "${FLAGS[@]}" || { echo "TEST BUILD FAILED — no shards run"; exit 1; }
 
 # Suite type names (swift-testing suites are types holding @Test methods).
 # (macOS ships bash 3.2 — no `mapfile`; use a read loop.)

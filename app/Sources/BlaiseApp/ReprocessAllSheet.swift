@@ -55,9 +55,13 @@ struct ReprocessAllSheet: View {
         .padding(20)
         .frame(width: 380)
         .task {
+            // Priced by the engine a run would actually use, so a free engine
+            // shows no cost and is never capped by the metered-API budget.
+            let engine = EngineResolver.resolveSummarization(
+                id: appEnv.engineSettings.selectedSummarizationID, registry: appEnv.registry)?.engine
             plan = await ReprocessAllPlanner.plan(
                 database: appEnv.database, ledger: appEnv.ledger,
-                perMeetingUSD: ReprocessAllPlanner.defaultPerMeetingUSD)
+                perMeetingUSD: engine.map(ReprocessAllPlanner.perMeetingUSD(for:)) ?? 0)
         }
     }
 
